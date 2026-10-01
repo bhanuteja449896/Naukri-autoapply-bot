@@ -401,6 +401,15 @@ def create_driver():
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
+    # Disable images and remote fonts to drastically cut load times and bandwidth
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.default_content_setting_values.notifications": 2,
+    }
+    options.add_experimental_option("prefs", prefs)
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.add_argument("--disable-remote-fonts")
+
     # Persistent user profile across hourly runs
     _clean_stale_profile_locks(CHROME_PROFILE_DIR)
     os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
@@ -675,33 +684,35 @@ def login_naukri(driver) -> bool:
 
 def build_search_urls():
     urls = []
+    locations = [l.strip() for l in LOCATION.split(",") if l.strip()] if LOCATION else [""]
     for keyword in KEYWORDS:
         slug = keyword.lower().replace(" ", "-")
-        for page in range(1, PAGES_PER_KEYWORD + 1):
-            if LOCATION:
-                loc_slug = LOCATION.lower().replace(" ", "-")
-                base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
-            else:
-                base = f"https://www.naukri.com/{slug}-jobs"
-            if page > 1:
-                base += f"-{page}"
+        for loc in locations:
+            for page in range(1, PAGES_PER_KEYWORD + 1):
+                if loc:
+                    loc_slug = loc.lower().replace(" ", "-")
+                    base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
+                else:
+                    base = f"https://www.naukri.com/{slug}-jobs"
+                if page > 1:
+                    base += f"-{page}"
 
-            params = []
-            if EXPERIENCE_MIN:
-                params.append(f"experience={EXPERIENCE_MIN}")
-            if SALARY_MIN:
-                # Supports either '5' (Lakhs) or '500000' (Rupees) or '5 Lakhs'
-                raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
-                if raw_sal:
-                    sal_num = int(raw_sal)
-                    sal_val = sal_num * 100000 if sal_num < 100 else sal_num
-                    params.append(f"salary={sal_val}")
-            if JOB_AGE_DAYS:
-                params.append(f"jobAge={JOB_AGE_DAYS}")
-            if params:
-                base += "?" + "&".join(params)
+                params = []
+                if EXPERIENCE_MIN:
+                    params.append(f"experience={EXPERIENCE_MIN}")
+                if SALARY_MIN:
+                    # Supports either '5' (Lakhs) or '500000' (Rupees) or '5 Lakhs'
+                    raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
+                    if raw_sal:
+                        sal_num = int(raw_sal)
+                        sal_val = sal_num * 100000 if sal_num < 100 else sal_num
+                        params.append(f"salary={sal_val}")
+                if JOB_AGE_DAYS:
+                    params.append(f"jobAge={JOB_AGE_DAYS}")
+                if params:
+                    base += "?" + "&".join(params)
 
-            urls.append((keyword, base))
+                urls.append((keyword, base))
     return urls
 
 

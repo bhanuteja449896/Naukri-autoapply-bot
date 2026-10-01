@@ -122,6 +122,8 @@ gcloud run deploy $SERVICE_NAME \
     --env-vars-file=env_bhanu.yaml \
     --set-secrets="/secrets/token/token.json=naukri-bot-token:latest,/secrets/credentials/credentials.json=naukri-bot-credentials:latest"
 
+gcloud run services update-traffic $SERVICE_NAME --to-latest --region=$REGION --project=$PROJECT_ID
+
 rm -f env_bhanu.yaml
 
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME \
