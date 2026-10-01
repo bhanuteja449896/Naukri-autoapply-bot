@@ -1,5 +1,6 @@
 # Environment variables (contains sensitive credentials)
 .env
+env.yaml
 
 # Python cache
 __pycache__/

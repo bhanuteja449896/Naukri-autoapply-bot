@@ -1,24 +1,23 @@
 #!/bin/bash
 # entrypoint.sh — Cloud Run container startup script
-# Links secrets mounted by Cloud Run into /app/ working directory
-
-set -e
-
-# Cloud Run mounts secrets at these paths (configured in deploy command):
-#   /secrets/token        → token.json
-#   /secrets/credentials  → credentials.json
 
 echo "Setting up secrets..."
 
-if [ -f /secrets/token ]; then
-    cp /secrets/token /app/token.json
-    echo "  token.json linked from secret"
+if [ -f /secrets/token/token.json ]; then
+    cat /secrets/token/token.json > /app/token.json
+    echo "  token.json configured from /secrets/token/"
+elif [ -f /secrets/token ]; then
+    cat /secrets/token > /app/token.json
+    echo "  token.json configured from /secrets/token"
 fi
 
-if [ -f /secrets/credentials ]; then
-    cp /secrets/credentials /app/credentials.json
-    echo "  credentials.json linked from secret"
+if [ -f /secrets/credentials/credentials.json ]; then
+    cat /secrets/credentials/credentials.json > /app/credentials.json
+    echo "  credentials.json configured from /secrets/credentials/"
+elif [ -f /secrets/credentials ]; then
+    cat /secrets/credentials > /app/credentials.json
+    echo "  credentials.json configured from /secrets/credentials"
 fi
 
-echo "Starting HTTP server..."
+echo "Starting HTTP server on port ${PORT:-8080}..."
 exec python cloud_run_server.py

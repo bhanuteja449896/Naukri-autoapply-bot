@@ -14,10 +14,10 @@
 set -e
 
 # ── CONFIG — edit these ──────────────────────────────────────────────────────
-PROJECT_ID="your-gcloud-project-id"      # gcloud projects list
+PROJECT_ID="metabase-mvp"
 SERVICE_NAME="naukri-bot"
 REGION="asia-south1"                     # Mumbai — closest to India
-IMAGE="gcr.io/$PROJECT_ID/$SERVICE_NAME"
+IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/naukri-repo/$SERVICE_NAME"
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo "========================================"
@@ -31,6 +31,8 @@ gcloud services enable \
     run.googleapis.com \
     cloudscheduler.googleapis.com \
     secretmanager.googleapis.com \
+    artifactregistry.googleapis.com \
+    storage.googleapis.com \
     --project=$PROJECT_ID
 
 # 2. Create secrets from local files
@@ -64,17 +66,53 @@ else
     exit 1
 fi
 
-# 3. Build and push Docker image
+# 3. Build and push Docker image to Artifact Registry
 echo "[3/7] Building Docker image..."
-gcloud builds submit --tag $IMAGE --project=$PROJECT_ID
+gcloud artifacts repositories create naukri-repo --repository-format=docker --location=$REGION --project=$PROJECT_ID 2>/dev/null || true
+BUILD_STAGING_BUCKET="${PROJECT_ID}-naukri-build-staging"
+gcloud storage buckets create gs://$BUILD_STAGING_BUCKET --location=$REGION --project=$PROJECT_ID 2>/dev/null || true
+gcloud builds submit --tag $IMAGE --gcs-source-staging-dir="gs://$BUILD_STAGING_BUCKET/source" --project=$PROJECT_ID
 
 # 3b. Create GCS Session Bucket for persistent login sessions
 SESSION_BUCKET="${PROJECT_ID}-naukri-session"
 echo "Setting up session bucket gs://$SESSION_BUCKET ..."
 gcloud storage buckets create gs://$SESSION_BUCKET --location=$REGION --project=$PROJECT_ID 2>/dev/null || true
 
-# 4. Deploy to Cloud Run
+# 3c. Grant Secret Manager & Storage permissions to Cloud Run service account
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+echo "Granting secret and storage access to $COMPUTE_SA ..."
+for SECRET in naukri-bot-token naukri-bot-credentials; do
+    gcloud secrets add-iam-policy-binding $SECRET \
+        --member="serviceAccount:$COMPUTE_SA" \
+        --role="roles/secretmanager.secretAccessor" \
+        --project=$PROJECT_ID 2>/dev/null || true
+done
+gcloud storage buckets add-iam-policy-binding gs://$SESSION_BUCKET \
+    --member="serviceAccount:$COMPUTE_SA" \
+    --role="roles/storage.objectAdmin" \
+    --project=$PROJECT_ID 2>/dev/null || true
+
+# 4. Prepare env.yaml and deploy to Cloud Run
 echo "[4/7] Deploying to Cloud Run ($REGION)..."
+
+python3 -c "
+session_bucket = '${SESSION_BUCKET}'
+with open('.env') as f, open('env.yaml', 'w') as out:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        k, v = line.split('=', 1)
+        k, v = k.strip(), v.strip()
+        if k == 'HEADLESS':
+            continue
+        v_clean = v.replace('\"', '\\\"')
+        out.write(f'{k}: \"{v_clean}\"\n')
+    out.write(f'GCS_BUCKET: \"{session_bucket}\"\n')
+    out.write('HEADLESS: \"true\"\n')
+"
+
 gcloud run deploy $SERVICE_NAME \
     --image=$IMAGE \
     --platform=managed \
@@ -87,9 +125,10 @@ gcloud run deploy $SERVICE_NAME \
     --no-cpu-throttling \
     --max-instances=1 \
     --concurrency=1 \
-    --set-env-vars="HEADLESS=true,SHEET_NAME=Applications,GCS_BUCKET=$SESSION_BUCKET" \
-    --set-secrets="/secrets/token=naukri-bot-token:latest,/secrets/credentials=naukri-bot-credentials:latest" \
-    --update-env-vars-from-file=.env
+    --env-vars-file=env.yaml \
+    --set-secrets="/secrets/token/token.json=naukri-bot-token:latest,/secrets/credentials/credentials.json=naukri-bot-credentials:latest"
+
+rm -f env.yaml
 
 # Get the Cloud Run service URL
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME \

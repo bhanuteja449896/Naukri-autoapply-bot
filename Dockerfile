@@ -2,16 +2,13 @@
 # Naukri Auto-Apply Bot — Cloud Run Container
 # ─────────────────────────────────────────────────────────────────────────────
 # Base image: slim Python + Chromium pre-installed (for undetected-chromedriver)
-FROM python:3.11-slim
+FROM python:3.11-bookworm
 
-# Install system dependencies for Chrome / undetected-chromedriver
+# Install Chromium and headless browser dependencies
 RUN apt-get update && apt-get install -y \
-    wget curl gnupg unzip \
+    wget curl unzip \
     chromium chromium-driver \
-    fonts-liberation libappindicator3-1 libasound2 libatk-bridge2.0-0 \
-    libatk1.0-0 libcups2 libdbus-1-3 libgdk-pixbuf2.0-0 libgtk-3-0 \
-    libnspr4 libnss3 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
-    xdg-utils libxss1 libgbm1 libu2f-udev \
+    fonts-liberation \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
