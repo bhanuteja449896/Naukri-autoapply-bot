@@ -1,5 +1,6 @@
 # Environment variables (contains sensitive credentials)
 .env
+.env.*
 env.yaml
 
 # Python cache
@@ -34,8 +35,8 @@ venv/
 env/
 .venv/
 # Google OAuth tokens — NEVER commit these
-credentials.json
-token.json
+credentials*.json
+token*.json
 
 # Browser session and cookies — NEVER commit these
 chrome_profile/

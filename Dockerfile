@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY naukri_bot.py .
 COPY sheets_client.py .
 COPY sheets_auth.py .
-COPY application_answers.csv .
+COPY application_answers*.csv ./
 
 # Cloud Run: secrets are mounted at /secrets/ (configured in deploy command)
 # token.json and credentials.json are symlinked at runtime via entrypoint

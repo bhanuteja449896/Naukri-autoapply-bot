@@ -119,7 +119,7 @@ def human_type(element, text):
 # Application Questionnaire & Knowledge Base
 # ─────────────────────────────────────────────────────────────────────────────
 
-ANSWERS_CSV = "application_answers.csv"
+ANSWERS_CSV = os.getenv("ANSWERS_CSV", "application_answers.csv")
 
 
 def load_known_answers() -> dict:
@@ -169,25 +169,43 @@ def fuzzy_lookup(question_text: str, known_answers: dict, threshold: float = 0.6
             return known_answers[k]
 
     if "current ctc" in q_norm or "fixed ctc" in q_norm:
-        return known_answers.get("current ctc", "26")
+        return known_answers.get("current ctc", "0")
     if "expected ctc" in q_norm or "expected salary" in q_norm:
-        return known_answers.get("expected ctc", "32")
+        return known_answers.get("expected ctc", "8")
+    if "pyspark" in q_norm or "spark" in q_norm:
+        return known_answers.get("pyspark", "1")
+    if "databricks" in q_norm:
+        return known_answers.get("azure databricks", "1")
+    if "adf" in q_norm or "data factory" in q_norm:
+        return known_answers.get("azure data factory", "1")
+    if "azure" in q_norm:
+        return known_answers.get("azure", "1")
+    if "fastapi" in q_norm:
+        return known_answers.get("fastapi", "1")
+    if "python" in q_norm:
+        return known_answers.get("experience in python", "2")
     if "spring" in q_norm:
-        return known_answers.get("spring boot", "7")
+        return known_answers.get("spring boot", "1")
     if "java" in q_norm:
-        return known_answers.get("experience in java", "10")
+        return known_answers.get("experience in java", "2")
+    if "react" in q_norm:
+        return known_answers.get("react", "1")
+    if "node" in q_norm:
+        return known_answers.get("node.js", "1")
+    if "langchain" in q_norm or "llm" in q_norm or "genai" in q_norm or "agent" in q_norm:
+        return known_answers.get("langchain", "1")
     if "total" in q_norm and "experience" in q_norm:
-        return known_answers.get("total experience", "10")
+        return known_answers.get("total experience", "1")
     if "microservice" in q_norm:
-        return known_answers.get("microservices", "7")
+        return known_answers.get("microservices", "1")
     if "docker" in q_norm:
-        return known_answers.get("docker", "8")
+        return known_answers.get("docker", "1")
     if "kubernetes" in q_norm:
-        return known_answers.get("kubernetes", "6")
+        return known_answers.get("kubernetes", "1")
     if "aws" in q_norm or "cloud" in q_norm:
-        return known_answers.get("aws", "8")
-    if "sql" in q_norm or "postgres" in q_norm or "oracle" in q_norm:
-        return known_answers.get("sql", "8")
+        return known_answers.get("azure", "1")
+    if "sql" in q_norm or "postgres" in q_norm or "mysql" in q_norm:
+        return known_answers.get("sql", "2")
 
     # 4. Difflib close matches
     matches = difflib.get_close_matches(q_norm, [k.lower() for k in known_answers.keys()], n=1, cutoff=threshold)
@@ -672,7 +690,12 @@ def build_search_urls():
             if EXPERIENCE_MIN:
                 params.append(f"experience={EXPERIENCE_MIN}")
             if SALARY_MIN:
-                params.append(f"salary={SALARY_MIN}")
+                # Supports either '5' (Lakhs) or '500000' (Rupees) or '5 Lakhs'
+                raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
+                if raw_sal:
+                    sal_num = int(raw_sal)
+                    sal_val = sal_num * 100000 if sal_num < 100 else sal_num
+                    params.append(f"salary={sal_val}")
             if JOB_AGE_DAYS:
                 params.append(f"jobAge={JOB_AGE_DAYS}")
             if params:
@@ -1076,6 +1099,10 @@ def run_bot():
                 new_jobs.append(j)
 
         logger.info(f"New jobs: {len(new_jobs)} | Skipped (seen): {len(all_jobs) - len(new_jobs)}")
+
+        if not new_jobs:
+            logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
+            return
 
         # Load questionnaire answers from application_answers.csv
         known_answers = load_known_answers()
