@@ -32,5 +32,11 @@ build/
 venv/
 env/
 .venv/
+# Google OAuth tokens — NEVER commit these
+credentials.json
+token.json
 
-application_answers.csv
+# Browser session and cookies — NEVER commit these
+chrome_profile/
+naukri_cookies.json
+login_debug.png

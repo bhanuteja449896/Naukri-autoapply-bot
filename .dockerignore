@@ -1,0 +1,11 @@
+.git
+.env
+token.json
+credentials.json
+naukriapplied.csv
+__pycache__
+*.pyc
+*.pyo
+venv/
+.venv/
+node_modules/

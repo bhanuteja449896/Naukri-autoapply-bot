@@ -1,10 +1,27 @@
 # Naukri Auto-Apply Bot Dependencies
 # Install with: pip install -r requirements.txt
 
-selenium>=4.0.0
+# Browser automation with stealth (Python 3.14 compatible)
+selenium-stealth>=1.0.6
+
+# HTML parsing
 beautifulsoup4>=4.11.0
 html5lib>=1.1
-pandas>=1.3.0
-python-dotenv>=1.0.0
-webdriver-manager>=4.0.0
 lxml>=4.9.0
+
+# Env config
+python-dotenv>=1.0.0
+
+# Google Sheets API & Cloud Storage
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.1.0
+google-cloud-storage>=2.10.0
+
+# Local scheduler (optional, for non-serverless deployments)
+schedule>=1.2.0
+
+# Legacy (kept for Naukri-Edge.py and Naukri-Recommended.py)
+selenium>=4.0.0
+webdriver-manager>=4.0.0
+pandas>=1.3.0
