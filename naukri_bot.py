@@ -119,7 +119,7 @@ def human_type(element, text):
 # Application Questionnaire & Knowledge Base
 # ─────────────────────────────────────────────────────────────────────────────
 
-ANSWERS_CSV = "application_answers.csv"
+ANSWERS_CSV = os.getenv("ANSWERS_CSV", "application_answers.csv")
 
 
 def load_known_answers() -> dict:
@@ -672,7 +672,12 @@ def build_search_urls():
             if EXPERIENCE_MIN:
                 params.append(f"experience={EXPERIENCE_MIN}")
             if SALARY_MIN:
-                params.append(f"salary={SALARY_MIN}")
+                # Supports either '5' (Lakhs) or '500000' (Rupees) or '5 Lakhs'
+                raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
+                if raw_sal:
+                    sal_num = int(raw_sal)
+                    sal_val = sal_num * 100000 if sal_num < 100 else sal_num
+                    params.append(f"salary={sal_val}")
             if JOB_AGE_DAYS:
                 params.append(f"jobAge={JOB_AGE_DAYS}")
             if params:
@@ -1076,6 +1081,10 @@ def run_bot():
                 new_jobs.append(j)
 
         logger.info(f"New jobs: {len(new_jobs)} | Skipped (seen): {len(all_jobs) - len(new_jobs)}")
+
+        if not new_jobs:
+            logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
+            return
 
         # Load questionnaire answers from application_answers.csv
         known_answers = load_known_answers()

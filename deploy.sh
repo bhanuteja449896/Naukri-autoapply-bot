@@ -97,8 +97,12 @@ gcloud storage buckets add-iam-policy-binding gs://$SESSION_BUCKET \
 echo "[4/7] Deploying to Cloud Run ($REGION)..."
 
 python3 -c "
+import os
 session_bucket = '${SESSION_BUCKET}'
-with open('.env') as f, open('env.yaml', 'w') as out:
+env_file = '.env.rahul' if os.path.exists('.env.rahul') else '.env'
+answers_file = 'application_answers_rahul.csv' if os.path.exists('application_answers_rahul.csv') else 'application_answers.csv'
+
+with open(env_file) as f, open('env.yaml', 'w') as out:
     for line in f:
         line = line.strip()
         if not line or line.startswith('#') or '=' not in line:
@@ -110,6 +114,7 @@ with open('.env') as f, open('env.yaml', 'w') as out:
         v_clean = v.replace('\"', '\\\"')
         out.write(f'{k}: \"{v_clean}\"\n')
     out.write(f'GCS_BUCKET: \"{session_bucket}\"\n')
+    out.write(f'ANSWERS_CSV: \"{answers_file}\"\n')
     out.write('HEADLESS: \"true\"\n')
 "
 
@@ -119,8 +124,8 @@ gcloud run deploy $SERVICE_NAME \
     --region=$REGION \
     --project=$PROJECT_ID \
     --no-allow-unauthenticated \
-    --memory=2Gi \
-    --cpu=2 \
+    --memory=1.5Gi \
+    --cpu=1 \
     --timeout=900 \
     --no-cpu-throttling \
     --max-instances=1 \
@@ -154,10 +159,10 @@ gcloud run services add-iam-policy-binding $SERVICE_NAME \
     --region=$REGION \
     --project=$PROJECT_ID
 
-# 6. Create Cloud Scheduler job (every hour)
-echo "[6/7] Creating hourly Cloud Scheduler job..."
+# 6. Create Cloud Scheduler job (every hour during hiring hours 8 AM - 10 PM IST)
+echo "[6/7] Creating hourly Cloud Scheduler job (8 AM - 10 PM IST)..."
 gcloud scheduler jobs create http naukri-bot-hourly \
-    --schedule="0 * * * *" \
+    --schedule="0 8-22 * * *" \
     --uri="$SERVICE_URL/run" \
     --http-method=POST \
     --oidc-service-account-email=$SA_EMAIL \
@@ -166,10 +171,10 @@ gcloud scheduler jobs create http naukri-bot-hourly \
     --project=$PROJECT_ID \
     --time-zone="Asia/Kolkata" \
     --attempt-deadline=15m \
-    --description="Triggers Naukri bot every hour" \
+    --description="Triggers Naukri bot every hour during hiring hours" \
     2>/dev/null || \
 gcloud scheduler jobs update http naukri-bot-hourly \
-    --schedule="0 * * * *" \
+    --schedule="0 8-22 * * *" \
     --uri="$SERVICE_URL/run" \
     --http-method=POST \
     --oidc-service-account-email=$SA_EMAIL \
