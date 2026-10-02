@@ -83,7 +83,25 @@ EXPERIENCE_MAX   = os.getenv("EXPERIENCE_MAX", "").strip()
 SALARY_MIN       = os.getenv("SALARY_MIN", "").strip()
 JOB_AGE_DAYS     = os.getenv("JOB_AGE_DAYS", "1").strip()
 
-PAGES_PER_KEYWORD = int(os.getenv("PAGES_PER_KEYWORD", "2"))
+# Location filtering logic:
+# If ALLOWED_LOCATIONS is set, or if LOCATION contains multiple cities separated by commas,
+# filter jobs in-memory by city and perform a nationwide search on Naukri.
+_env_allowed = os.getenv("ALLOWED_LOCATIONS", "").strip()
+if _env_allowed:
+    ALLOWED_LOCATIONS = [l.strip().lower() for l in _env_allowed.split(",") if l.strip()]
+elif "," in LOCATION:
+    ALLOWED_LOCATIONS = [l.strip().lower() for l in LOCATION.split(",") if l.strip()]
+    LOCATION = ""  # Clear so it doesn't try to use comma-separated string in URL slug
+elif LOCATION.lower() in ("all", "india", ""):
+    ALLOWED_LOCATIONS = []
+    LOCATION = ""
+else:
+    ALLOWED_LOCATIONS = []
+
+MAX_PAGES_PER_KEYWORD = int(os.getenv("MAX_PAGES_PER_KEYWORD", os.getenv("PAGES_PER_KEYWORD", "15")))
+if MAX_PAGES_PER_KEYWORD <= 0:
+    MAX_PAGES_PER_KEYWORD = 15
+PAGES_PER_KEYWORD = MAX_PAGES_PER_KEYWORD
 MAX_APPLICATIONS  = int(os.getenv("MAX_APPLICATIONS", "50"))
 
 GOOGLE_SHEET_ID  = os.getenv("GOOGLE_SHEET_ID", "")
@@ -679,41 +697,53 @@ def login_naukri(driver) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# URL Builder
+# Location Filtering & URL Builder
 # ─────────────────────────────────────────────────────────────────────────────
 
+def is_allowed_location(job_loc: str) -> bool:
+    """
+    Check if a job location matches any of the configured allowed locations.
+    If ALLOWED_LOCATIONS is empty, allows all locations (e.g. nationwide apply).
+    """
+    if not ALLOWED_LOCATIONS:
+        return True
+    if not job_loc:
+        return False
+    job_loc_lower = job_loc.lower()
+    return any(allowed in job_loc_lower for allowed in ALLOWED_LOCATIONS)
+
+
+def build_search_url_for_page(keyword: str, page: int = 1) -> str:
+    """Build Naukri search URL for a given keyword and page number."""
+    slug = keyword.lower().replace(" ", "-")
+    if LOCATION and "," not in LOCATION:
+        loc_slug = LOCATION.lower().replace(" ", "-")
+        base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
+    else:
+        base = f"https://www.naukri.com/{slug}-jobs"
+
+    if page > 1:
+        base += f"-{page}"
+
+    params = []
+    if EXPERIENCE_MIN:
+        params.append(f"experience={EXPERIENCE_MIN}")
+    if SALARY_MIN:
+        raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
+        if raw_sal:
+            sal_num = int(raw_sal)
+            sal_val = sal_num * 100000 if sal_num < 100 else sal_num
+            params.append(f"salary={sal_val}")
+    if JOB_AGE_DAYS:
+        params.append(f"jobAge={JOB_AGE_DAYS}")
+    if params:
+        base += "?" + "&".join(params)
+    return base
+
+
 def build_search_urls():
-    urls = []
-    locations = [l.strip() for l in LOCATION.split(",") if l.strip()] if LOCATION else [""]
-    for keyword in KEYWORDS:
-        slug = keyword.lower().replace(" ", "-")
-        for loc in locations:
-            for page in range(1, PAGES_PER_KEYWORD + 1):
-                if loc:
-                    loc_slug = loc.lower().replace(" ", "-")
-                    base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
-                else:
-                    base = f"https://www.naukri.com/{slug}-jobs"
-                if page > 1:
-                    base += f"-{page}"
-
-                params = []
-                if EXPERIENCE_MIN:
-                    params.append(f"experience={EXPERIENCE_MIN}")
-                if SALARY_MIN:
-                    # Supports either '5' (Lakhs) or '500000' (Rupees) or '5 Lakhs'
-                    raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
-                    if raw_sal:
-                        sal_num = int(raw_sal)
-                        sal_val = sal_num * 100000 if sal_num < 100 else sal_num
-                        params.append(f"salary={sal_val}")
-                if JOB_AGE_DAYS:
-                    params.append(f"jobAge={JOB_AGE_DAYS}")
-                if params:
-                    base += "?" + "&".join(params)
-
-                urls.append((keyword, base))
-    return urls
+    """Build initial search URLs (Page 1) for all keywords."""
+    return [(kw, build_search_url_for_page(kw, 1)) for kw in KEYWORDS]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1092,24 +1122,74 @@ def run_bot():
             logger.error("=" * 60)
             return
 
-        # Scrape
+        # Scrape with dynamic pagination per keyword
         all_jobs = []
-        for keyword, url in build_search_urls():
-            all_jobs.extend(scrape_jobs_from_page(driver, url, keyword))
-            human_sleep(1.5, 3.0)
+        logger.info(f"🚀 Starting job search across {len(KEYWORDS)} keywords (Freshness: {JOB_AGE_DAYS}d, Max Pages/Keyword: {MAX_PAGES_PER_KEYWORD})")
+        if ALLOWED_LOCATIONS:
+            logger.info(f"📍 Allowed locations filter active: {', '.join(ALLOWED_LOCATIONS)}")
+        else:
+            logger.info("📍 Nationwide search active (all locations allowed)")
 
-        logger.info(f"Total scraped: {len(all_jobs)}")
+        for keyword in KEYWORDS:
+            page = 1
+            seen_urls_for_keyword = set()
+            logger.info(f"🔎 Keyword: '{keyword}'")
+
+            while True:
+                url = build_search_url_for_page(keyword, page)
+                logger.info(f"  Fetching Page {page}: {url}")
+                page_jobs = scrape_jobs_from_page(driver, url, keyword)
+
+                if not page_jobs:
+                    logger.info(f"  No jobs found on page {page} for '{keyword}'. End of results.")
+                    break
+
+                # Check if Naukri wrapped around or redirected to an already-seen page
+                page_urls = [j["naukri_url"] for j in page_jobs if j.get("naukri_url")]
+                if page_urls and all(u in seen_urls_for_keyword for u in page_urls):
+                    logger.info(f"  Page {page} returned duplicate jobs from earlier pages for '{keyword}'. End of results.")
+                    break
+                seen_urls_for_keyword.update(page_urls)
+
+                all_jobs.extend(page_jobs)
+
+                # Stop paging if all jobs on this page have already been seen/applied in previous bot runs,
+                # because Naukri results are sorted chronologically (latest first)
+                if page_urls and all(u in applied_urls for u in page_urls):
+                    logger.info(f"  All {len(page_jobs)} jobs on page {page} were already processed in earlier runs. Stopping pagination for '{keyword}'.")
+                    break
+
+                if page >= MAX_PAGES_PER_KEYWORD:
+                    logger.info(f"  Reached max page limit ({MAX_PAGES_PER_KEYWORD}) for '{keyword}'.")
+                    break
+
+                page += 1
+                human_sleep(2.0, 3.5)
+
+        logger.info(f"Total jobs scraped: {len(all_jobs)}")
+
+        # Location filtering (keep only allowed cities if configured)
+        matching_jobs = []
+        skipped_loc_count = 0
+        for j in all_jobs:
+            if is_allowed_location(j.get("location", "")):
+                matching_jobs.append(j)
+            else:
+                skipped_loc_count += 1
+                logger.debug(f"Skipping {j['title']} (Location '{j.get('location')}' outside allowed cities)")
+
+        logger.info(f"Location filtering: {len(matching_jobs)} matched allowed cities ({skipped_loc_count} skipped)")
 
         # Deduplicate
         seen_this_run = set()
         new_jobs = []
-        for j in all_jobs:
+        for j in matching_jobs:
             u = j["naukri_url"]
             if u not in applied_urls and u not in seen_this_run:
                 seen_this_run.add(u)
                 new_jobs.append(j)
 
-        logger.info(f"New jobs: {len(new_jobs)} | Skipped (seen): {len(all_jobs) - len(new_jobs)}")
+        logger.info(f"New jobs to process: {len(new_jobs)} | Skipped (already applied/logged): {len(matching_jobs) - len(new_jobs)}")
 
         if not new_jobs:
             logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")

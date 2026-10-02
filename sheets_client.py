@@ -126,14 +126,13 @@ def _ensure_headers(service, sheet_id: str, sheet_name: str, headers: list):
 def append_external_job(service, sheet_id: str, job: dict):
     """
     Log a job that requires applying on the company's own website.
-    Goes into the 'Apply on Website' sheet.
+    Goes into the 'Apply on Website' sheet (appended to bottom).
     """
     row = [str(job.get(f, "")) for f in FIELDS_EXTERNAL]
     service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
-        range=f"'{SHEET_EXTERNAL}'!A1",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
+        range=f"'{SHEET_EXTERNAL}'!A:I",
+        valueInputOption="USER_ENTERED",
         body={"values": [row]},
     ).execute()
 
@@ -141,14 +140,13 @@ def append_external_job(service, sheet_id: str, job: dict):
 def append_direct_job(service, sheet_id: str, job: dict):
     """
     Log a job that was directly applied on Naukri.
-    Goes into the 'Direct Applied' sheet.
+    Goes into the 'Direct Applied' sheet (appended to bottom).
     """
     row = [str(job.get(f, "")) for f in FIELDS_DIRECT]
     service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
-        range=f"'{SHEET_DIRECT}'!A1",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
+        range=f"'{SHEET_DIRECT}'!A:H",
+        valueInputOption="USER_ENTERED",
         body={"values": [row]},
     ).execute()
 

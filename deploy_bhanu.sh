@@ -115,7 +115,7 @@ gcloud run deploy $SERVICE_NAME \
     --no-allow-unauthenticated \
     --memory=1.5Gi \
     --cpu=1 \
-    --timeout=900 \
+    --timeout=1800 \
     --no-cpu-throttling \
     --max-instances=1 \
     --concurrency=1 \
@@ -160,7 +160,7 @@ gcloud scheduler jobs create http $JOB_NAME \
     --location=$REGION \
     --project=$PROJECT_ID \
     --time-zone="Asia/Kolkata" \
-    --attempt-deadline=15m \
+    --attempt-deadline=30m \
     --description="Triggers Bhanu Naukri bot every hour during hiring hours" \
     2>/dev/null || \
 gcloud scheduler jobs update http $JOB_NAME \
@@ -172,7 +172,7 @@ gcloud scheduler jobs update http $JOB_NAME \
     --location=$REGION \
     --project=$PROJECT_ID \
     --time-zone="Asia/Kolkata" \
-    --attempt-deadline=15m
+    --attempt-deadline=30m
 
 # 7. Grant access
 CR_SA=$(gcloud run services describe $SERVICE_NAME \
