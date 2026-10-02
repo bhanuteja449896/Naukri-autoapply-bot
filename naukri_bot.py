@@ -110,6 +110,8 @@ SHEET_NAME       = os.getenv("SHEET_NAME", "Applications")
 COOKIES_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naukri_cookies.json")
 CHROME_PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_profile")
 GCS_BUCKET         = os.getenv("GCS_BUCKET", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,6 +124,49 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def send_telegram_notification(text: str):
+    """Send a notification message via Telegram bot."""
+    token = TELEGRAM_BOT_TOKEN
+    chat_id = TELEGRAM_CHAT_ID
+    if not token:
+        return
+
+    # If chat_id is not set, try to auto-detect from getUpdates
+    if not chat_id:
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"https://api.telegram.org/bot{token}/getUpdates")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                updates = data.get("result", [])
+                if updates:
+                    last_msg = updates[-1].get("message") or updates[-1].get("channel_post")
+                    if last_msg and "chat" in last_msg:
+                        chat_id = str(last_msg["chat"]["id"])
+                        logger.info(f"Auto-detected Telegram chat_id: {chat_id}")
+        except Exception as e:
+            logger.debug(f"Could not auto-detect chat_id: {e}")
+
+    if not chat_id:
+        logger.warning("Telegram notification skipped: TELEGRAM_CHAT_ID not configured.")
+        return
+
+    try:
+        import urllib.request
+        import urllib.parse
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": text,
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                logger.info(f"📲 Telegram notification sent: {text.splitlines()[0]}")
+    except Exception as e:
+        logger.warning(f"Telegram notification failed: {e}")
+
 
 def human_sleep(mn=1.5, mx=4.0):
     time.sleep(random.uniform(mn, mx))
@@ -1191,6 +1236,9 @@ def run_bot():
             logger.error("=" * 60)
             return
 
+        user_name = FIRSTNAME or "Bhanu"
+        send_telegram_notification(f"{user_name}\nNaukri bot Activated")
+
         # Scrape with dynamic pagination per keyword
         all_jobs = []
         logger.info(f"🚀 Starting job search across {len(KEYWORDS)} keywords (Freshness: {JOB_AGE_DAYS}d, Max Pages/Keyword: {MAX_PAGES_PER_KEYWORD})")
@@ -1264,6 +1312,7 @@ def run_bot():
         if not new_jobs:
             logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
             save_seen_cache(seen_cache)
+            send_telegram_notification(f"{user_name}\njobs applied : 0\nNaukri bot Deactivated")
             return
 
         # Load questionnaire answers from application_answers.csv
@@ -1324,6 +1373,9 @@ def run_bot():
     logger.info(f"  External (Sheets)  : {n_external}")
     logger.info(f"  Failed             : {n_failed}")
     logger.info("=" * 60)
+
+    user_name = FIRSTNAME or "Bhanu"
+    send_telegram_notification(f"{user_name}\njobs applied : {n_applied}\nNaukri bot Deactivated")
 
 
 if __name__ == "__main__":
