@@ -538,6 +538,60 @@ def upload_session_to_gcs(path=COOKIES_FILE):
         logger.warning(f"Could not sync session to GCS: {e}")
 
 
+SEEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_jobs_cache.json")
+
+
+def load_seen_cache() -> set:
+    """Load previously seen/evaluated job URLs from GCS and local cache."""
+    seen = set()
+    if GCS_BUCKET:
+        try:
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(GCS_BUCKET)
+            blob = bucket.blob("seen_jobs_cache.json")
+            if blob.exists():
+                blob.download_to_filename(SEEN_CACHE_FILE)
+                logger.info(f"☁️ Downloaded seen cache from gs://{GCS_BUCKET}/seen_jobs_cache.json")
+        except Exception as e:
+            logger.debug(f"Could not download seen cache from GCS: {e}")
+
+    if os.path.exists(SEEN_CACHE_FILE):
+        try:
+            with open(SEEN_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    seen.update(data)
+            logger.info(f"Loaded {len(seen)} previously evaluated job URLs from cache.")
+        except Exception as e:
+            logger.warning(f"Could not load seen cache file: {e}")
+    return seen
+
+
+def save_seen_cache(seen: set):
+    """Save seen job URLs to local cache file and sync to GCS."""
+    if not seen:
+        return
+    try:
+        # Keep last 3000 URLs to keep file lightweight (< 150 KB)
+        urls_to_save = list(seen)[-3000:]
+        with open(SEEN_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(urls_to_save, f)
+
+        if GCS_BUCKET:
+            try:
+                from google.cloud import storage
+                client = storage.Client()
+                bucket = client.bucket(GCS_BUCKET)
+                blob = bucket.blob("seen_jobs_cache.json")
+                blob.upload_from_filename(SEEN_CACHE_FILE)
+                logger.info(f"☁️ Synced {len(urls_to_save)} evaluated job URLs to gs://{GCS_BUCKET}/seen_jobs_cache.json")
+            except Exception as e:
+                logger.debug(f"Could not sync seen cache to GCS: {e}")
+    except Exception as e:
+        logger.warning(f"Could not save seen cache: {e}")
+
+
 def save_cookies(driver, path=COOKIES_FILE):
     """Save current browser cookies to JSON file and sync to Cloud Storage if configured."""
     try:
@@ -704,13 +758,24 @@ def is_allowed_location(job_loc: str) -> bool:
     """
     Check if a job location matches any of the configured allowed locations.
     If ALLOWED_LOCATIONS is empty, allows all locations (e.g. nationwide apply).
+    Supports remote synonyms if 'remote' is in ALLOWED_LOCATIONS.
     """
     if not ALLOWED_LOCATIONS:
         return True
     if not job_loc:
         return False
     job_loc_lower = job_loc.lower()
-    return any(allowed in job_loc_lower for allowed in ALLOWED_LOCATIONS)
+
+    if any(allowed in job_loc_lower for allowed in ALLOWED_LOCATIONS):
+        return True
+
+    # If remote is allowed, also check common remote keywords
+    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh")):
+        remote_terms = ("remote", "work from home", "wfh", "anywhere in india")
+        if any(term in job_loc_lower for term in remote_terms):
+            return True
+
+    return False
 
 
 def build_search_url_for_page(keyword: str, page: int = 1) -> str:
@@ -1090,7 +1155,7 @@ def run_bot():
         logger.error("Missing NAUKRI_EMAIL / NAUKRI_PASSWORD / KEYWORDS in .env")
         return
 
-    # ── Load seen URLs ──────────────────────────────────────────────────────
+    # ── Load seen URLs & Evaluated Cache ─────────────────────────────────────
     applied_urls = load_local_csv_urls()
     sheets = None
 
@@ -1106,6 +1171,10 @@ def run_bot():
             logger.warning(f"Sheets load failed: {e}. Proceeding with local CSV only.")
     else:
         logger.info(f"Loaded {len(applied_urls)} already-applied URLs (local CSV).")
+
+    # Load evaluated/seen cache so the bot never re-evaluates skipped or old jobs from earlier runs
+    seen_cache = load_seen_cache()
+    applied_urls.update(seen_cache)
 
     # ── Browser ─────────────────────────────────────────────────────────────
     driver = None
@@ -1152,11 +1221,12 @@ def run_bot():
                 seen_urls_for_keyword.update(page_urls)
 
                 all_jobs.extend(page_jobs)
+                seen_cache.update(page_urls)
 
-                # Stop paging if all jobs on this page have already been seen/applied in previous bot runs,
-                # because Naukri results are sorted chronologically (latest first)
+                # Stop paging if all jobs on this page have already been evaluated/seen in previous runs,
+                # saving compute and preventing re-checks of earlier jobs
                 if page_urls and all(u in applied_urls for u in page_urls):
-                    logger.info(f"  All {len(page_jobs)} jobs on page {page} were already processed in earlier runs. Stopping pagination for '{keyword}'.")
+                    logger.info(f"  ⚡ All {len(page_jobs)} jobs on page {page} were already evaluated in earlier runs. Stopping pagination for '{keyword}'.")
                     break
 
                 if page >= MAX_PAGES_PER_KEYWORD:
@@ -1193,6 +1263,7 @@ def run_bot():
 
         if not new_jobs:
             logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
+            save_seen_cache(seen_cache)
             return
 
         # Load questionnaire answers from application_answers.csv
@@ -1234,6 +1305,7 @@ def run_bot():
         logger.error(f"Bot error: {e}")
         traceback.print_exc()
     finally:
+        save_seen_cache(seen_cache)
         if driver:
             try:
                 driver.quit()
