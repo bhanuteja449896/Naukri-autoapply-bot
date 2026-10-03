@@ -856,17 +856,28 @@ def is_allowed_job(job: dict) -> bool:
 
     if WORK_MODE_ONLY:
         matched_mode = any(m in work_mode or m in loc_lower or m in title for m in WORK_MODE_ONLY)
-        if not matched_mode and not WFH_TYPE:
+        if not matched_mode:
             return False
 
     return is_allowed_location(loc)
 
 
+def sanitize_keyword_slug(keyword: str) -> str:
+    """Convert human keyword into valid Naukri URL slug."""
+    s = keyword.lower()
+    s = s.replace("c#", "c-sharp")
+    s = s.replace(".net", "dotnet")
+    s = s.replace("dot net", "dotnet")
+    s = s.replace("asp.net", "asp-net")
+    s = re.sub(r'[^a-z0-9]+', '-', s)
+    return s.strip('-')
+
+
 def build_search_url_for_page(keyword: str, page: int = 1) -> str:
     """Build Naukri search URL for a given keyword and page number."""
-    slug = keyword.lower().replace(" ", "-")
+    slug = sanitize_keyword_slug(keyword)
     if LOCATION and "," not in LOCATION:
-        loc_slug = LOCATION.lower().replace(" ", "-")
+        loc_slug = sanitize_keyword_slug(LOCATION)
         base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
     else:
         base = f"https://www.naukri.com/{slug}-jobs"
@@ -885,8 +896,6 @@ def build_search_url_for_page(keyword: str, page: int = 1) -> str:
             params.append(f"salary={sal_val}")
     if JOB_AGE_DAYS:
         params.append(f"jobAge={JOB_AGE_DAYS}")
-    if WFH_TYPE:
-        params.append(f"wfhType={WFH_TYPE}")
     if params:
         base += "?" + "&".join(params)
     return base

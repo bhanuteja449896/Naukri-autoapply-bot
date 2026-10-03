@@ -1,8 +1,11 @@
 question_text,answer,field_type,created_at
-notice period,30 Days,text,2026-10-03T03:20:00
-what is your notice period,30 Days,text,2026-10-03T03:20:00
-notice period in days,30,text,2026-10-03T03:20:00
-how soon can you join,30 Days,text,2026-10-03T03:20:00
+notice period,Immediate,text,2026-10-03T03:20:00
+what is your notice period,Immediate,text,2026-10-03T03:20:00
+notice period in days,0,text,2026-10-03T03:20:00
+notice period (in days),0,text,2026-10-03T03:20:00
+how soon can you join,Immediately,text,2026-10-03T03:20:00
+immediate joiner,Yes,radio,2026-10-03T03:20:00
+are you an immediate joiner,Yes,radio,2026-10-03T03:20:00
 serving notice period,No,radio,2026-10-03T03:20:00
 are you serving notice period,No,radio,2026-10-03T03:20:00
 are you currently employed,Yes,radio,2026-10-03T03:20:00
