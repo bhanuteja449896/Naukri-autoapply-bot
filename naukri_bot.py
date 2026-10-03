@@ -1234,7 +1234,13 @@ def run_bot():
     results = []
     applied_count = 0
     IST = timezone(timedelta(hours=5, minutes=30))
-    start_time_str = datetime.now(IST).strftime("%I:%M %p")
+    now = datetime.now(IST)
+    if now.minute < 10:
+        start_time_str = now.replace(minute=0, second=0).strftime("%I:%M %p")
+    else:
+        start_time_str = now.strftime("%I:%M %p")
+    start_time_epoch = time.time()
+    MAX_RUN_SECONDS = int(os.getenv("MAX_RUN_SECONDS", "1680"))  # 28 mins max (leaving 2 mins for clean sleep)
     notification_sent = False
     try:
         driver = create_driver()
@@ -1256,11 +1262,19 @@ def run_bot():
             logger.info("📍 Nationwide search active (all locations allowed)")
 
         for keyword in KEYWORDS:
+            if time.time() - start_time_epoch > MAX_RUN_SECONDS:
+                logger.info(f"⏱️ Maximum search duration reached ({MAX_RUN_SECONDS}s). Proceeding to process collected jobs.")
+                break
+
             page = 1
             seen_urls_for_keyword = set()
             logger.info(f"🔎 Keyword: '{keyword}'")
 
             while True:
+                if time.time() - start_time_epoch > MAX_RUN_SECONDS:
+                    logger.info("⏱️ Time limit reached during pagination. Stopping search.")
+                    break
+
                 url = build_search_url_for_page(keyword, page)
                 logger.info(f"  Fetching Page {page}: {url}")
                 page_jobs = scrape_jobs_from_page(driver, url, keyword)
@@ -1318,10 +1332,7 @@ def run_bot():
         logger.info(f"New jobs to process: {len(new_jobs)} | Skipped (already applied/logged): {len(matching_jobs) - len(new_jobs)}")
 
         if not new_jobs:
-            logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
-            save_seen_cache(seen_cache)
-            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, 0))
-            notification_sent = True
+            logger.info("⚡ No new jobs found this run (all already processed). Exiting early to enter sleep mode.")
             return
 
         # Load questionnaire answers from application_answers.csv
@@ -1329,6 +1340,10 @@ def run_bot():
 
         # Apply
         for i, job in enumerate(new_jobs, 1):
+            if time.time() - start_time_epoch > MAX_RUN_SECONDS:
+                logger.info(f"⏱️ Maximum run duration reached ({MAX_RUN_SECONDS}s). Stopping applications to enter sleep mode.")
+                break
+
             if MAX_APPLICATIONS > 0 and applied_count >= MAX_APPLICATIONS:
                 logger.info(f"Target applications limit ({MAX_APPLICATIONS}) reached.")
                 break
@@ -1363,8 +1378,19 @@ def run_bot():
         logger.error(f"Bot error: {e}")
         traceback.print_exc()
     finally:
+        n_applied  = sum(1 for j in results if j.get("status") == "Applied")
+        n_external = sum(1 for j in results if j.get("status") == "External")
+        n_failed   = sum(1 for j in results if j.get("status") in ("Failed", "No Apply Button"))
+
+        logger.info("=" * 60)
+        logger.info("RUN SUMMARY")
+        logger.info(f"  Applied (Naukri)   : {n_applied}")
+        logger.info(f"  External (Sheets)  : {n_external}")
+        logger.info(f"  Failed             : {n_failed}")
+        logger.info("=" * 60)
+
         if not notification_sent:
-            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, applied_count))
+            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, n_applied))
             notification_sent = True
         save_seen_cache(seen_cache)
         if driver:
@@ -1374,21 +1400,6 @@ def run_bot():
             except Exception:
                 pass
         lock.release()
-
-    n_applied  = sum(1 for j in results if j["status"] == "Applied")
-    n_external = sum(1 for j in results if j["status"] == "External")
-    n_failed   = sum(1 for j in results if j["status"] in ("Failed", "No Apply Button"))
-
-    logger.info("=" * 60)
-    logger.info("RUN SUMMARY")
-    logger.info(f"  Applied (Naukri)   : {n_applied}")
-    logger.info(f"  External (Sheets)  : {n_external}")
-    logger.info(f"  Failed             : {n_failed}")
-    logger.info("=" * 60)
-
-    if not notification_sent:
-        send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, n_applied))
-        notification_sent = True
 
 
 if __name__ == "__main__":
