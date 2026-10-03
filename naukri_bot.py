@@ -27,7 +27,7 @@ import random
 import logging
 import difflib
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 # Selenium + stealth (Python 3.14 compatible — replaces undetected-chromedriver)
@@ -83,7 +83,25 @@ EXPERIENCE_MAX   = os.getenv("EXPERIENCE_MAX", "").strip()
 SALARY_MIN       = os.getenv("SALARY_MIN", "").strip()
 JOB_AGE_DAYS     = os.getenv("JOB_AGE_DAYS", "1").strip()
 
-PAGES_PER_KEYWORD = int(os.getenv("PAGES_PER_KEYWORD", "2"))
+# Location filtering logic:
+# If ALLOWED_LOCATIONS is set, or if LOCATION contains multiple cities separated by commas,
+# filter jobs in-memory by city and perform a nationwide search on Naukri.
+_env_allowed = os.getenv("ALLOWED_LOCATIONS", "").strip()
+if _env_allowed:
+    ALLOWED_LOCATIONS = [l.strip().lower() for l in _env_allowed.split(",") if l.strip()]
+elif "," in LOCATION:
+    ALLOWED_LOCATIONS = [l.strip().lower() for l in LOCATION.split(",") if l.strip()]
+    LOCATION = ""  # Clear so it doesn't try to use comma-separated string in URL slug
+elif LOCATION.lower() in ("all", "india", ""):
+    ALLOWED_LOCATIONS = []
+    LOCATION = ""
+else:
+    ALLOWED_LOCATIONS = []
+
+MAX_PAGES_PER_KEYWORD = int(os.getenv("MAX_PAGES_PER_KEYWORD", os.getenv("PAGES_PER_KEYWORD", "15")))
+if MAX_PAGES_PER_KEYWORD <= 0:
+    MAX_PAGES_PER_KEYWORD = 15
+PAGES_PER_KEYWORD = MAX_PAGES_PER_KEYWORD
 MAX_APPLICATIONS  = int(os.getenv("MAX_APPLICATIONS", "50"))
 
 GOOGLE_SHEET_ID  = os.getenv("GOOGLE_SHEET_ID", "")
@@ -92,6 +110,8 @@ SHEET_NAME       = os.getenv("SHEET_NAME", "Applications")
 COOKIES_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naukri_cookies.json")
 CHROME_PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_profile")
 GCS_BUCKET         = os.getenv("GCS_BUCKET", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,6 +124,57 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def send_telegram_notification(text: str):
+    """Send a notification message via Telegram bot."""
+    token = TELEGRAM_BOT_TOKEN
+    chat_id = TELEGRAM_CHAT_ID
+    if not token:
+        return
+
+    # If chat_id is not set, try to auto-detect from getUpdates
+    if not chat_id:
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"https://api.telegram.org/bot{token}/getUpdates")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                updates = data.get("result", [])
+                if updates:
+                    last_msg = updates[-1].get("message") or updates[-1].get("channel_post")
+                    if last_msg and "chat" in last_msg:
+                        chat_id = str(last_msg["chat"]["id"])
+                        logger.info(f"Auto-detected Telegram chat_id: {chat_id}")
+        except Exception as e:
+            logger.debug(f"Could not auto-detect chat_id: {e}")
+
+    if not chat_id:
+        logger.warning("Telegram notification skipped: TELEGRAM_CHAT_ID not configured.")
+        return
+
+    try:
+        import urllib.request
+        import urllib.parse
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": text,
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                logger.info(f"📲 Telegram notification sent: {text.splitlines()[0]}")
+    except Exception as e:
+        logger.warning(f"Telegram notification failed: {e}")
+
+
+def format_telegram_summary(first_name: str, start_time: str, applied_count: int) -> str:
+    """Format Telegram completion message according to profile specification."""
+    if "bhanu" in (first_name or "").lower():
+        return f"Bhanu Teja\nTime : {start_time}\njobs applied : {applied_count}"
+    else:
+        return f"Rahul\nstarting time : {start_time}\nJobs applied : {applied_count}"
+
 
 def human_sleep(mn=1.5, mx=4.0):
     time.sleep(random.uniform(mn, mx))
@@ -169,25 +240,43 @@ def fuzzy_lookup(question_text: str, known_answers: dict, threshold: float = 0.6
             return known_answers[k]
 
     if "current ctc" in q_norm or "fixed ctc" in q_norm:
-        return known_answers.get("current ctc", "26")
+        return known_answers.get("current ctc", "0")
     if "expected ctc" in q_norm or "expected salary" in q_norm:
-        return known_answers.get("expected ctc", "32")
+        return known_answers.get("expected ctc", "8")
+    if "pyspark" in q_norm or "spark" in q_norm:
+        return known_answers.get("pyspark", "1")
+    if "databricks" in q_norm:
+        return known_answers.get("azure databricks", "1")
+    if "adf" in q_norm or "data factory" in q_norm:
+        return known_answers.get("azure data factory", "1")
+    if "azure" in q_norm:
+        return known_answers.get("azure", "1")
+    if "fastapi" in q_norm:
+        return known_answers.get("fastapi", "1")
+    if "python" in q_norm:
+        return known_answers.get("experience in python", "2")
     if "spring" in q_norm:
-        return known_answers.get("spring boot", "7")
+        return known_answers.get("spring boot", "1")
     if "java" in q_norm:
-        return known_answers.get("experience in java", "10")
+        return known_answers.get("experience in java", "2")
+    if "react" in q_norm:
+        return known_answers.get("react", "1")
+    if "node" in q_norm:
+        return known_answers.get("node.js", "1")
+    if "langchain" in q_norm or "llm" in q_norm or "genai" in q_norm or "agent" in q_norm:
+        return known_answers.get("langchain", "1")
     if "total" in q_norm and "experience" in q_norm:
-        return known_answers.get("total experience", "10")
+        return known_answers.get("total experience", "1")
     if "microservice" in q_norm:
-        return known_answers.get("microservices", "7")
+        return known_answers.get("microservices", "1")
     if "docker" in q_norm:
-        return known_answers.get("docker", "8")
+        return known_answers.get("docker", "1")
     if "kubernetes" in q_norm:
-        return known_answers.get("kubernetes", "6")
+        return known_answers.get("kubernetes", "1")
     if "aws" in q_norm or "cloud" in q_norm:
-        return known_answers.get("aws", "8")
-    if "sql" in q_norm or "postgres" in q_norm or "oracle" in q_norm:
-        return known_answers.get("sql", "8")
+        return known_answers.get("azure", "1")
+    if "sql" in q_norm or "postgres" in q_norm or "mysql" in q_norm:
+        return known_answers.get("sql", "2")
 
     # 4. Difflib close matches
     matches = difflib.get_close_matches(q_norm, [k.lower() for k in known_answers.keys()], n=1, cutoff=threshold)
@@ -502,6 +591,60 @@ def upload_session_to_gcs(path=COOKIES_FILE):
         logger.warning(f"Could not sync session to GCS: {e}")
 
 
+SEEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_jobs_cache.json")
+
+
+def load_seen_cache() -> set:
+    """Load previously seen/evaluated job URLs from GCS and local cache."""
+    seen = set()
+    if GCS_BUCKET:
+        try:
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(GCS_BUCKET)
+            blob = bucket.blob("seen_jobs_cache.json")
+            if blob.exists():
+                blob.download_to_filename(SEEN_CACHE_FILE)
+                logger.info(f"☁️ Downloaded seen cache from gs://{GCS_BUCKET}/seen_jobs_cache.json")
+        except Exception as e:
+            logger.debug(f"Could not download seen cache from GCS: {e}")
+
+    if os.path.exists(SEEN_CACHE_FILE):
+        try:
+            with open(SEEN_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    seen.update(data)
+            logger.info(f"Loaded {len(seen)} previously evaluated job URLs from cache.")
+        except Exception as e:
+            logger.warning(f"Could not load seen cache file: {e}")
+    return seen
+
+
+def save_seen_cache(seen: set):
+    """Save seen job URLs to local cache file and sync to GCS."""
+    if not seen:
+        return
+    try:
+        # Keep last 3000 URLs to keep file lightweight (< 150 KB)
+        urls_to_save = list(seen)[-3000:]
+        with open(SEEN_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(urls_to_save, f)
+
+        if GCS_BUCKET:
+            try:
+                from google.cloud import storage
+                client = storage.Client()
+                bucket = client.bucket(GCS_BUCKET)
+                blob = bucket.blob("seen_jobs_cache.json")
+                blob.upload_from_filename(SEEN_CACHE_FILE)
+                logger.info(f"☁️ Synced {len(urls_to_save)} evaluated job URLs to gs://{GCS_BUCKET}/seen_jobs_cache.json")
+            except Exception as e:
+                logger.debug(f"Could not sync seen cache to GCS: {e}")
+    except Exception as e:
+        logger.warning(f"Could not save seen cache: {e}")
+
+
 def save_cookies(driver, path=COOKIES_FILE):
     """Save current browser cookies to JSON file and sync to Cloud Storage if configured."""
     try:
@@ -661,41 +804,64 @@ def login_naukri(driver) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# URL Builder
+# Location Filtering & URL Builder
 # ─────────────────────────────────────────────────────────────────────────────
 
+def is_allowed_location(job_loc: str) -> bool:
+    """
+    Check if a job location matches any of the configured allowed locations.
+    If ALLOWED_LOCATIONS is empty, allows all locations (e.g. nationwide apply).
+    Supports remote synonyms if 'remote' is in ALLOWED_LOCATIONS.
+    """
+    if not ALLOWED_LOCATIONS:
+        return True
+    if not job_loc:
+        return False
+    job_loc_lower = job_loc.lower()
+
+    if any(allowed in job_loc_lower for allowed in ALLOWED_LOCATIONS):
+        return True
+
+    # If remote is allowed, also check common remote keywords
+    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh")):
+        remote_terms = ("remote", "work from home", "wfh", "anywhere in india")
+        if any(term in job_loc_lower for term in remote_terms):
+            return True
+
+    return False
+
+
+def build_search_url_for_page(keyword: str, page: int = 1) -> str:
+    """Build Naukri search URL for a given keyword and page number."""
+    slug = keyword.lower().replace(" ", "-")
+    if LOCATION and "," not in LOCATION:
+        loc_slug = LOCATION.lower().replace(" ", "-")
+        base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
+    else:
+        base = f"https://www.naukri.com/{slug}-jobs"
+
+    if page > 1:
+        base += f"-{page}"
+
+    params = []
+    if EXPERIENCE_MIN:
+        params.append(f"experience={EXPERIENCE_MIN}")
+    if SALARY_MIN:
+        raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
+        if raw_sal:
+            sal_num = int(raw_sal)
+            sal_val = sal_num * 100000 if sal_num < 100 else sal_num
+            params.append(f"salary={sal_val}")
+    if JOB_AGE_DAYS:
+        params.append(f"jobAge={JOB_AGE_DAYS}")
+    if params:
+        base += "?" + "&".join(params)
+    return base
+
+
 def build_search_urls():
-    urls = []
-    locations = [l.strip() for l in LOCATION.split(",") if l.strip()] if LOCATION else [""]
-    for keyword in KEYWORDS:
-        slug = keyword.lower().replace(" ", "-")
-        for loc in locations:
-            for page in range(1, PAGES_PER_KEYWORD + 1):
-                if loc:
-                    loc_slug = loc.lower().replace(" ", "-")
-                    base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
-                else:
-                    base = f"https://www.naukri.com/{slug}-jobs"
-                if page > 1:
-                    base += f"-{page}"
-
-                params = []
-                if EXPERIENCE_MIN:
-                    params.append(f"experience={EXPERIENCE_MIN}")
-                if SALARY_MIN:
-                    # Supports either '5' (Lakhs) or '500000' (Rupees) or '5 Lakhs'
-                    raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
-                    if raw_sal:
-                        sal_num = int(raw_sal)
-                        sal_val = sal_num * 100000 if sal_num < 100 else sal_num
-                        params.append(f"salary={sal_val}")
-                if JOB_AGE_DAYS:
-                    params.append(f"jobAge={JOB_AGE_DAYS}")
-                if params:
-                    base += "?" + "&".join(params)
-
-                urls.append((keyword, base))
-    return urls
+    """Build initial search URLs (Page 1) for all keywords."""
+    return [(kw, build_search_url_for_page(kw, 1)) for kw in KEYWORDS]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1042,7 +1208,7 @@ def run_bot():
         logger.error("Missing NAUKRI_EMAIL / NAUKRI_PASSWORD / KEYWORDS in .env")
         return
 
-    # ── Load seen URLs ──────────────────────────────────────────────────────
+    # ── Load seen URLs & Evaluated Cache ─────────────────────────────────────
     applied_urls = load_local_csv_urls()
     sheets = None
 
@@ -1059,10 +1225,23 @@ def run_bot():
     else:
         logger.info(f"Loaded {len(applied_urls)} already-applied URLs (local CSV).")
 
+    # Load evaluated/seen cache so the bot never re-evaluates skipped or old jobs from earlier runs
+    seen_cache = load_seen_cache()
+    applied_urls.update(seen_cache)
+
     # ── Browser ─────────────────────────────────────────────────────────────
     driver = None
     results = []
     applied_count = 0
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST)
+    if now.minute < 10:
+        start_time_str = now.replace(minute=0, second=0).strftime("%I:%M %p")
+    else:
+        start_time_str = now.strftime("%I:%M %p")
+    start_time_epoch = time.time()
+    MAX_RUN_SECONDS = int(os.getenv("MAX_RUN_SECONDS", "1680"))  # 28 mins max (leaving 2 mins for clean sleep)
+    notification_sent = False
     try:
         driver = create_driver()
         is_logged_in = ensure_naukri_session(driver)
@@ -1074,24 +1253,87 @@ def run_bot():
             logger.error("=" * 60)
             return
 
-        # Scrape
+        # Scrape with dynamic pagination per keyword
         all_jobs = []
-        for keyword, url in build_search_urls():
-            all_jobs.extend(scrape_jobs_from_page(driver, url, keyword))
-            human_sleep(1.5, 3.0)
+        logger.info(f"🚀 Starting job search across {len(KEYWORDS)} keywords (Freshness: {JOB_AGE_DAYS}d, Max Pages/Keyword: {MAX_PAGES_PER_KEYWORD})")
+        if ALLOWED_LOCATIONS:
+            logger.info(f"📍 Allowed locations filter active: {', '.join(ALLOWED_LOCATIONS)}")
+        else:
+            logger.info("📍 Nationwide search active (all locations allowed)")
 
-        logger.info(f"Total scraped: {len(all_jobs)}")
+        for keyword in KEYWORDS:
+            if time.time() - start_time_epoch > MAX_RUN_SECONDS:
+                logger.info(f"⏱️ Maximum search duration reached ({MAX_RUN_SECONDS}s). Proceeding to process collected jobs.")
+                break
+
+            page = 1
+            seen_urls_for_keyword = set()
+            logger.info(f"🔎 Keyword: '{keyword}'")
+
+            while True:
+                if time.time() - start_time_epoch > MAX_RUN_SECONDS:
+                    logger.info("⏱️ Time limit reached during pagination. Stopping search.")
+                    break
+
+                url = build_search_url_for_page(keyword, page)
+                logger.info(f"  Fetching Page {page}: {url}")
+                page_jobs = scrape_jobs_from_page(driver, url, keyword)
+
+                if not page_jobs:
+                    logger.info(f"  No jobs found on page {page} for '{keyword}'. End of results.")
+                    break
+
+                # Check if Naukri wrapped around or redirected to an already-seen page
+                page_urls = [j["naukri_url"] for j in page_jobs if j.get("naukri_url")]
+                if page_urls and all(u in seen_urls_for_keyword for u in page_urls):
+                    logger.info(f"  Page {page} returned duplicate jobs from earlier pages for '{keyword}'. End of results.")
+                    break
+                seen_urls_for_keyword.update(page_urls)
+
+                all_jobs.extend(page_jobs)
+                seen_cache.update(page_urls)
+
+                # Stop paging if all jobs on this page have already been evaluated/seen in previous runs,
+                # saving compute and preventing re-checks of earlier jobs
+                if page_urls and all(u in applied_urls for u in page_urls):
+                    logger.info(f"  ⚡ All {len(page_jobs)} jobs on page {page} were already evaluated in earlier runs. Stopping pagination for '{keyword}'.")
+                    break
+
+                if page >= MAX_PAGES_PER_KEYWORD:
+                    logger.info(f"  Reached max page limit ({MAX_PAGES_PER_KEYWORD}) for '{keyword}'.")
+                    break
+
+                page += 1
+                human_sleep(2.0, 3.5)
+
+        logger.info(f"Total jobs scraped: {len(all_jobs)}")
+
+        # Location filtering (keep only allowed cities if configured)
+        matching_jobs = []
+        skipped_loc_count = 0
+        for j in all_jobs:
+            if is_allowed_location(j.get("location", "")):
+                matching_jobs.append(j)
+            else:
+                skipped_loc_count += 1
+                logger.debug(f"Skipping {j['title']} (Location '{j.get('location')}' outside allowed cities)")
+
+        logger.info(f"Location filtering: {len(matching_jobs)} matched allowed cities ({skipped_loc_count} skipped)")
 
         # Deduplicate
         seen_this_run = set()
         new_jobs = []
-        for j in all_jobs:
+        for j in matching_jobs:
             u = j["naukri_url"]
             if u not in applied_urls and u not in seen_this_run:
                 seen_this_run.add(u)
                 new_jobs.append(j)
 
-        logger.info(f"New jobs: {len(new_jobs)} | Skipped (seen): {len(all_jobs) - len(new_jobs)}")
+        logger.info(f"New jobs to process: {len(new_jobs)} | Skipped (already applied/logged): {len(matching_jobs) - len(new_jobs)}")
+
+        if not new_jobs:
+            logger.info("⚡ No new jobs found this run (all already processed). Exiting early to enter sleep mode.")
+            return
 
         if not new_jobs:
             logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
@@ -1102,6 +1344,10 @@ def run_bot():
 
         # Apply
         for i, job in enumerate(new_jobs, 1):
+            if time.time() - start_time_epoch > MAX_RUN_SECONDS:
+                logger.info(f"⏱️ Maximum run duration reached ({MAX_RUN_SECONDS}s). Stopping applications to enter sleep mode.")
+                break
+
             if MAX_APPLICATIONS > 0 and applied_count >= MAX_APPLICATIONS:
                 logger.info(f"Target applications limit ({MAX_APPLICATIONS}) reached.")
                 break
@@ -1136,6 +1382,21 @@ def run_bot():
         logger.error(f"Bot error: {e}")
         traceback.print_exc()
     finally:
+        n_applied  = sum(1 for j in results if j.get("status") == "Applied")
+        n_external = sum(1 for j in results if j.get("status") == "External")
+        n_failed   = sum(1 for j in results if j.get("status") in ("Failed", "No Apply Button"))
+
+        logger.info("=" * 60)
+        logger.info("RUN SUMMARY")
+        logger.info(f"  Applied (Naukri)   : {n_applied}")
+        logger.info(f"  External (Sheets)  : {n_external}")
+        logger.info(f"  Failed             : {n_failed}")
+        logger.info("=" * 60)
+
+        if not notification_sent:
+            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, n_applied))
+            notification_sent = True
+        save_seen_cache(seen_cache)
         if driver:
             try:
                 driver.quit()
@@ -1143,17 +1404,6 @@ def run_bot():
             except Exception:
                 pass
         lock.release()
-
-    n_applied  = sum(1 for j in results if j["status"] == "Applied")
-    n_external = sum(1 for j in results if j["status"] == "External")
-    n_failed   = sum(1 for j in results if j["status"] in ("Failed", "No Apply Button"))
-
-    logger.info("=" * 60)
-    logger.info("RUN SUMMARY")
-    logger.info(f"  Applied (Naukri)   : {n_applied}")
-    logger.info(f"  External (Sheets)  : {n_external}")
-    logger.info(f"  Failed             : {n_failed}")
-    logger.info("=" * 60)
 
 
 if __name__ == "__main__":

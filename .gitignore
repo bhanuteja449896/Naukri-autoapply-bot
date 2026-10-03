@@ -3,6 +3,7 @@
 .env.*
 env.yaml
 env_*.yaml
+*.pdf
 
 # Python cache
 __pycache__/
