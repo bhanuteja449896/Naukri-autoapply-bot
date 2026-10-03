@@ -824,7 +824,7 @@ def is_allowed_location(job_loc: str) -> bool:
     """
     Check if a job location matches any of the configured allowed locations.
     If ALLOWED_LOCATIONS is empty, allows all locations (e.g. nationwide apply).
-    Supports remote synonyms if 'remote' is in ALLOWED_LOCATIONS.
+    Supports remote, wfh, and hybrid synonyms if configured.
     """
     if not ALLOWED_LOCATIONS:
         return True
@@ -835,10 +835,10 @@ def is_allowed_location(job_loc: str) -> bool:
     if any(allowed in job_loc_lower for allowed in ALLOWED_LOCATIONS):
         return True
 
-    # If remote is allowed, also check common remote keywords
-    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh")):
-        remote_terms = ("remote", "work from home", "wfh", "anywhere in india")
-        if any(term in job_loc_lower for term in remote_terms):
+    # If remote, wfh, or hybrid is in ALLOWED_LOCATIONS, check common terms
+    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh", "hybrid")):
+        flexible_terms = ("remote", "work from home", "wfh", "anywhere in india", "hybrid")
+        if any(term in job_loc_lower for term in flexible_terms):
             return True
 
     return False
@@ -858,6 +858,11 @@ def is_allowed_job(job: dict) -> bool:
         matched_mode = any(m in work_mode or m in loc_lower or m in title for m in WORK_MODE_ONLY)
         if not matched_mode:
             return False
+
+    # If hybrid, remote, or wfh is in allowed locations, and job is tagged as Hybrid or Remote, allow it!
+    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh", "hybrid")):
+        if work_mode in ("hybrid", "remote"):
+            return True
 
     return is_allowed_location(loc)
 
@@ -887,7 +892,14 @@ def build_search_url_for_page(keyword: str, page: int = 1) -> str:
 
     params = []
     if EXPERIENCE_MIN:
-        params.append(f"experience={EXPERIENCE_MIN}")
+        try:
+            # If EXPERIENCE_MIN is 0, do not pass experience=0 to Naukri
+            # because Naukri interprets experience=0 as strictly Fresher (0 years only),
+            # excluding 1-2 years experience jobs when EXPERIENCE_MAX is 2.
+            if int(EXPERIENCE_MIN) > 0:
+                params.append(f"experience={EXPERIENCE_MIN}")
+        except ValueError:
+            params.append(f"experience={EXPERIENCE_MIN}")
     if SALARY_MIN:
         raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
         if raw_sal:
@@ -1345,8 +1357,8 @@ def run_bot():
                 seen_cache.update(page_urls)
 
                 # Stop paging if all jobs on this page have already been evaluated/seen in previous runs,
-                # saving compute and preventing re-checks of earlier jobs
-                if page_urls and all(u in applied_urls for u in page_urls):
+                # saving compute and preventing re-checks of earlier jobs (check at least 2 pages)
+                if page >= 2 and page_urls and all(u in applied_urls for u in page_urls):
                     logger.info(f"  ⚡ All {len(page_jobs)} jobs on page {page} were already evaluated in earlier runs. Stopping pagination for '{keyword}'.")
                     break
 
