@@ -170,8 +170,11 @@ def send_telegram_notification(text: str):
 
 def format_telegram_summary(first_name: str, start_time: str, applied_count: int) -> str:
     """Format Telegram completion message according to profile specification."""
-    if "bhanu" in (first_name or "").lower():
+    fn = (first_name or "").lower()
+    if "bhanu" in fn:
         return f"Bhanu Teja\nTime : {start_time}\njobs applied : {applied_count}"
+    elif "kiran" in fn:
+        return f"Kiran Kumar\nTime : {start_time}\njobs applied : {applied_count}"
     else:
         return f"Rahul\nstarting time : {start_time}\nJobs applied : {applied_count}"
 
