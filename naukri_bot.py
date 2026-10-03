@@ -98,6 +98,10 @@ elif LOCATION.lower() in ("all", "india", ""):
 else:
     ALLOWED_LOCATIONS = []
 
+WFH_TYPE         = os.getenv("WFH_TYPE", "").strip()
+_env_work_mode   = os.getenv("WORK_MODE_ONLY", "").strip()
+WORK_MODE_ONLY   = [m.strip().lower() for m in _env_work_mode.split(",") if m.strip()]
+
 MAX_PAGES_PER_KEYWORD = int(os.getenv("MAX_PAGES_PER_KEYWORD", os.getenv("PAGES_PER_KEYWORD", "15")))
 if MAX_PAGES_PER_KEYWORD <= 0:
     MAX_PAGES_PER_KEYWORD = 15
@@ -834,6 +838,24 @@ def is_allowed_location(job_loc: str) -> bool:
     return False
 
 
+def is_allowed_job(job: dict) -> bool:
+    """
+    Check if a job matches both the configured workplace type (Hybrid, Remote, etc.)
+    and location requirements.
+    """
+    loc = job.get("location", "")
+    work_mode = job.get("work_mode", "").lower()
+    title = job.get("title", "").lower()
+    loc_lower = loc.lower()
+
+    if WORK_MODE_ONLY:
+        matched_mode = any(m in work_mode or m in loc_lower or m in title for m in WORK_MODE_ONLY)
+        if not matched_mode and not WFH_TYPE:
+            return False
+
+    return is_allowed_location(loc)
+
+
 def build_search_url_for_page(keyword: str, page: int = 1) -> str:
     """Build Naukri search URL for a given keyword and page number."""
     slug = keyword.lower().replace(" ", "-")
@@ -857,6 +879,8 @@ def build_search_url_for_page(keyword: str, page: int = 1) -> str:
             params.append(f"salary={sal_val}")
     if JOB_AGE_DAYS:
         params.append(f"jobAge={JOB_AGE_DAYS}")
+    if WFH_TYPE:
+        params.append(f"wfhType={WFH_TYPE}")
     if params:
         base += "?" + "&".join(params)
     return base
@@ -920,6 +944,14 @@ def _parse_card(wrapper, keyword):
         loc_tag = wrapper.find("span", class_="locWdth") or wrapper.find("span", class_="location")
         location = loc_tag.get_text(strip=True) if loc_tag else (LOCATION or "N/A")
 
+        # Capture card text to detect workplace type (Hybrid / Remote / On-site)
+        card_text = wrapper.get_text(separator=" ", strip=True).lower()
+        work_mode = "On-site"
+        if "hybrid" in card_text or "hybrid" in location.lower():
+            work_mode = "Hybrid"
+        elif any(r in card_text or r in location.lower() for r in ("remote", "work from home", "wfh")):
+            work_mode = "Remote"
+
         exp_tag = wrapper.find("span", class_="expwdth") or wrapper.find("span", class_="experience")
         experience = exp_tag.get_text(strip=True) if exp_tag else "N/A"
 
@@ -932,6 +964,7 @@ def _parse_card(wrapper, keyword):
             "naukri_url":   href,
             "external_url": "",
             "location":     location,
+            "work_mode":    work_mode,
             "experience":   experience,
             "salary":       salary,
             "date":         datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -1315,13 +1348,13 @@ def run_bot():
         matching_jobs = []
         skipped_loc_count = 0
         for j in all_jobs:
-            if is_allowed_location(j.get("location", "")):
+            if is_allowed_job(j):
                 matching_jobs.append(j)
             else:
                 skipped_loc_count += 1
-                logger.debug(f"Skipping {j['title']} (Location '{j.get('location')}' outside allowed cities)")
+                logger.debug(f"Skipping {j['title']} (Location '{j.get('location')}', Mode '{j.get('work_mode')}' outside allowed criteria)")
 
-        logger.info(f"Location filtering: {len(matching_jobs)} matched allowed cities ({skipped_loc_count} skipped)")
+        logger.info(f"Criteria filtering: {len(matching_jobs)} matched allowed criteria ({skipped_loc_count} skipped)")
 
         # Deduplicate
         seen_this_run = set()
