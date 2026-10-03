@@ -28,6 +28,7 @@ import logging
 import difflib
 import traceback
 from datetime import datetime, timezone, timedelta
+import urllib.parse
 from dotenv import load_dotenv
 
 # Selenium + stealth (Python 3.14 compatible — replaces undetected-chromedriver)
@@ -97,6 +98,10 @@ elif LOCATION.lower() in ("all", "india", ""):
     LOCATION = ""
 else:
     ALLOWED_LOCATIONS = []
+
+WFH_TYPE         = os.getenv("WFH_TYPE", "").strip()
+_env_work_mode   = os.getenv("WORK_MODE_ONLY", "").strip()
+WORK_MODE_ONLY   = [m.strip().lower() for m in _env_work_mode.split(",") if m.strip()]
 
 MAX_PAGES_PER_KEYWORD = int(os.getenv("MAX_PAGES_PER_KEYWORD", os.getenv("PAGES_PER_KEYWORD", "15")))
 if MAX_PAGES_PER_KEYWORD <= 0:
@@ -170,8 +175,11 @@ def send_telegram_notification(text: str):
 
 def format_telegram_summary(first_name: str, start_time: str, applied_count: int) -> str:
     """Format Telegram completion message according to profile specification."""
-    if "bhanu" in (first_name or "").lower():
+    fn = (first_name or "").lower()
+    if "bhanu" in fn:
         return f"Bhanu Teja\nTime : {start_time}\njobs applied : {applied_count}"
+    elif "kiran" in fn:
+        return f"Kiran Kumar\nTime : {start_time}\njobs applied : {applied_count}"
     else:
         return f"Rahul\nstarting time : {start_time}\nJobs applied : {applied_count}"
 
@@ -251,6 +259,12 @@ def fuzzy_lookup(question_text: str, known_answers: dict, threshold: float = 0.6
         return known_answers.get("azure data factory", "1")
     if "azure" in q_norm:
         return known_answers.get("azure", "1")
+    if "c#" in q_norm or "c sharp" in q_norm:
+        return known_answers.get("c#", known_answers.get("experience in c#", "4"))
+    if ".net" in q_norm or "dotnet" in q_norm or "asp.net" in q_norm:
+        return known_answers.get(".net", known_answers.get(".net core", "4"))
+    if "entity framework" in q_norm or "ef core" in q_norm:
+        return known_answers.get("entity framework", "4")
     if "fastapi" in q_norm:
         return known_answers.get("fastapi", "1")
     if "python" in q_norm:
@@ -811,7 +825,7 @@ def is_allowed_location(job_loc: str) -> bool:
     """
     Check if a job location matches any of the configured allowed locations.
     If ALLOWED_LOCATIONS is empty, allows all locations (e.g. nationwide apply).
-    Supports remote synonyms if 'remote' is in ALLOWED_LOCATIONS.
+    Supports remote, wfh, and hybrid synonyms if configured.
     """
     if not ALLOWED_LOCATIONS:
         return True
@@ -822,20 +836,122 @@ def is_allowed_location(job_loc: str) -> bool:
     if any(allowed in job_loc_lower for allowed in ALLOWED_LOCATIONS):
         return True
 
-    # If remote is allowed, also check common remote keywords
-    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh")):
-        remote_terms = ("remote", "work from home", "wfh", "anywhere in india")
-        if any(term in job_loc_lower for term in remote_terms):
+    # If remote, wfh, or hybrid is in ALLOWED_LOCATIONS, check common terms
+    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh", "hybrid")):
+        flexible_terms = ("remote", "work from home", "wfh", "anywhere in india", "hybrid")
+        if any(term in job_loc_lower for term in flexible_terms):
             return True
 
     return False
 
 
+def is_allowed_job(job: dict) -> bool:
+    """
+    Check if a job matches both the configured workplace type (Hybrid, Remote, etc.)
+    and location requirements.
+    """
+    loc = job.get("location", "")
+    work_mode = job.get("work_mode", "").lower()
+    title = job.get("title", "").lower()
+    loc_lower = loc.lower()
+
+    if WORK_MODE_ONLY:
+        matched_mode = any(m in work_mode or m in loc_lower or m in title for m in WORK_MODE_ONLY)
+        if not matched_mode:
+            return False
+
+    # If hybrid, remote, or wfh is in allowed locations, and job is tagged as Hybrid or Remote, allow it!
+    if any(r in ALLOWED_LOCATIONS for r in ("remote", "wfh", "hybrid")):
+        if work_mode in ("hybrid", "remote"):
+            return True
+
+    return is_allowed_location(loc)
+
+
+def sanitize_keyword_slug(keyword: str) -> str:
+    """Convert human keyword into valid Naukri URL slug."""
+    s = keyword.lower()
+    s = s.replace("c#", "c-sharp")
+    s = s.replace(".net", "dotnet")
+    s = s.replace("dot net", "dotnet")
+    s = s.replace("asp.net", "asp-net")
+    s = re.sub(r'[^a-z0-9]+', '-', s)
+    return s.strip('-')
+
+
+def build_unified_search_url(page: int = 1) -> str:
+    """
+    Build a unified Naukri search URL combining ALL keywords, locations,
+    work modes (Hybrid / Remote / WFH), experience, salary, and job age into ONE query.
+    """
+    params = []
+
+    # 1. Keywords (comma-separated, URL encoded)
+    if KEYWORDS:
+        kw_str = ", ".join(KEYWORDS)
+        params.append(f"k={urllib.parse.quote_plus(kw_str)}")
+
+    # 2. Locations: extract clean city names
+    loc_candidates = []
+    if ALLOWED_LOCATIONS:
+        for loc in ALLOWED_LOCATIONS:
+            if loc.lower() not in ("remote", "wfh", "hybrid", "work from home", "all", "india"):
+                loc_candidates.append(loc.strip().title())
+    elif LOCATION and LOCATION.lower() not in ("all", "india", ""):
+        for loc in LOCATION.split(","):
+            loc = loc.strip()
+            if loc.lower() not in ("remote", "wfh", "hybrid", "work from home", "all", "india"):
+                loc_candidates.append(loc.title())
+
+    if loc_candidates:
+        unique_locs = list(dict.fromkeys(loc_candidates))
+        params.append(f"l={urllib.parse.quote_plus(', '.join(unique_locs))}")
+
+    # 3. Work mode filter (WFH / Hybrid / Remote)
+    has_remote = any(r in ("remote", "wfh", "work from home") for r in WORK_MODE_ONLY) or any(r in ("remote", "wfh", "work from home") for r in ALLOWED_LOCATIONS)
+    has_hybrid = any("hybrid" in r for r in WORK_MODE_ONLY) or any("hybrid" in r for r in ALLOWED_LOCATIONS)
+
+    if has_remote and has_hybrid:
+        params.append("wfhType=0%2C1")
+    elif has_remote:
+        params.append("wfhType=0")
+    elif has_hybrid:
+        params.append("wfhType=1")
+
+    # 4. Experience
+    if EXPERIENCE_MIN:
+        try:
+            if int(EXPERIENCE_MIN) > 0:
+                params.append(f"experience={EXPERIENCE_MIN}")
+        except ValueError:
+            params.append(f"experience={EXPERIENCE_MIN}")
+
+    # 5. Salary
+    if SALARY_MIN:
+        raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
+        if raw_sal:
+            sal_num = int(raw_sal)
+            sal_val = sal_num * 100000 if sal_num < 100 else sal_num
+            params.append(f"salary={sal_val}")
+
+    # 6. Job age (Freshness)
+    if JOB_AGE_DAYS:
+        params.append(f"jobAge={JOB_AGE_DAYS}")
+
+    base = "https://www.naukri.com/jobs-in-india"
+    if page > 1:
+        base += f"-{page}"
+
+    if params:
+        base += "?" + "&".join(params)
+    return base
+
+
 def build_search_url_for_page(keyword: str, page: int = 1) -> str:
     """Build Naukri search URL for a given keyword and page number."""
-    slug = keyword.lower().replace(" ", "-")
+    slug = sanitize_keyword_slug(keyword)
     if LOCATION and "," not in LOCATION:
-        loc_slug = LOCATION.lower().replace(" ", "-")
+        loc_slug = sanitize_keyword_slug(LOCATION)
         base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
     else:
         base = f"https://www.naukri.com/{slug}-jobs"
@@ -845,7 +961,11 @@ def build_search_url_for_page(keyword: str, page: int = 1) -> str:
 
     params = []
     if EXPERIENCE_MIN:
-        params.append(f"experience={EXPERIENCE_MIN}")
+        try:
+            if int(EXPERIENCE_MIN) > 0:
+                params.append(f"experience={EXPERIENCE_MIN}")
+        except ValueError:
+            params.append(f"experience={EXPERIENCE_MIN}")
     if SALARY_MIN:
         raw_sal = "".join(c for c in SALARY_MIN if c.isdigit())
         if raw_sal:
@@ -917,11 +1037,33 @@ def _parse_card(wrapper, keyword):
         loc_tag = wrapper.find("span", class_="locWdth") or wrapper.find("span", class_="location")
         location = loc_tag.get_text(strip=True) if loc_tag else (LOCATION or "N/A")
 
+        # Capture card text to detect workplace type (Hybrid / Remote / On-site)
+        card_text = wrapper.get_text(separator=" ", strip=True).lower()
+        work_mode = "On-site"
+        if "hybrid" in card_text or "hybrid" in location.lower():
+            work_mode = "Hybrid"
+        elif any(r in card_text or r in location.lower() for r in ("remote", "work from home", "wfh")):
+            work_mode = "Remote"
+
         exp_tag = wrapper.find("span", class_="expwdth") or wrapper.find("span", class_="experience")
         experience = exp_tag.get_text(strip=True) if exp_tag else "N/A"
 
         sal_tag = wrapper.find("span", class_="sal") or wrapper.find("span", class_="salary")
         salary = sal_tag.get_text(strip=True) if sal_tag else "Not Disclosed"
+
+        try:
+            from zoneinfo import ZoneInfo
+            applied_date = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            applied_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        matched_keyword = keyword
+        if keyword in ("Unified", "All") or not keyword:
+            title_lower = title.lower()
+            matched_keyword = next(
+                (kw for kw in KEYWORDS if any(w.lower() in title_lower for w in kw.split())),
+                KEYWORDS[0] if KEYWORDS else "Developer"
+            )
 
         return {
             "title":        title,
@@ -929,11 +1071,12 @@ def _parse_card(wrapper, keyword):
             "naukri_url":   href,
             "external_url": "",
             "location":     location,
+            "work_mode":    work_mode,
             "experience":   experience,
             "salary":       salary,
-            "date":         datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "date":         applied_date,
             "status":       "Pending",
-            "keyword":      keyword,
+            "keyword":      matched_keyword,
         }
     except Exception as e:
         logger.debug(f"Card parse error: {e}")
@@ -1253,58 +1396,55 @@ def run_bot():
             logger.error("=" * 60)
             return
 
-        # Scrape with dynamic pagination per keyword
+        # Scrape using unified search URL (all roles, locations, work modes in ONE query)
         all_jobs = []
-        logger.info(f"🚀 Starting job search across {len(KEYWORDS)} keywords (Freshness: {JOB_AGE_DAYS}d, Max Pages/Keyword: {MAX_PAGES_PER_KEYWORD})")
-        if ALLOWED_LOCATIONS:
-            logger.info(f"📍 Allowed locations filter active: {', '.join(ALLOWED_LOCATIONS)}")
-        else:
-            logger.info("📍 Nationwide search active (all locations allowed)")
+        max_unified_pages = int(os.getenv("MAX_PAGES", os.getenv("MAX_PAGES_PER_KEYWORD", "25")))
+        if max_unified_pages < 15:
+            max_unified_pages = 25
 
-        for keyword in KEYWORDS:
+        logger.info(f"🚀 Starting UNIFIED Job Search (all roles & locations combined in ONE query)")
+        logger.info(f"   Keywords ({len(KEYWORDS)}): {', '.join(KEYWORDS)}")
+        if ALLOWED_LOCATIONS:
+            logger.info(f"   Allowed locations: {', '.join(ALLOWED_LOCATIONS)}")
+        if WORK_MODE_ONLY:
+            logger.info(f"   Work mode preference: {', '.join(WORK_MODE_ONLY)}")
+        logger.info(f"   Freshness: {JOB_AGE_DAYS}d | Max Pages: {max_unified_pages}")
+
+        page = 1
+        seen_urls_in_run = set()
+
+        while True:
             if time.time() - start_time_epoch > MAX_RUN_SECONDS:
-                logger.info(f"⏱️ Maximum search duration reached ({MAX_RUN_SECONDS}s). Proceeding to process collected jobs.")
+                logger.info("⏱️ Time limit reached during pagination. Stopping search.")
                 break
 
-            page = 1
-            seen_urls_for_keyword = set()
-            logger.info(f"🔎 Keyword: '{keyword}'")
+            url = build_unified_search_url(page)
+            logger.info(f"  Fetching Unified Page {page}: {url}")
+            page_jobs = scrape_jobs_from_page(driver, url, keyword="Unified")
 
-            while True:
-                if time.time() - start_time_epoch > MAX_RUN_SECONDS:
-                    logger.info("⏱️ Time limit reached during pagination. Stopping search.")
-                    break
+            if not page_jobs:
+                logger.info(f"  No jobs found on page {page}. End of search results.")
+                break
 
-                url = build_search_url_for_page(keyword, page)
-                logger.info(f"  Fetching Page {page}: {url}")
-                page_jobs = scrape_jobs_from_page(driver, url, keyword)
+            page_urls = [j["naukri_url"] for j in page_jobs if j.get("naukri_url")]
+            if page_urls and all(u in seen_urls_in_run for u in page_urls):
+                logger.info(f"  Page {page} returned duplicate jobs from earlier pages. End of search.")
+                break
+            seen_urls_in_run.update(page_urls)
 
-                if not page_jobs:
-                    logger.info(f"  No jobs found on page {page} for '{keyword}'. End of results.")
-                    break
+            all_jobs.extend(page_jobs)
+            seen_cache.update(page_urls)
 
-                # Check if Naukri wrapped around or redirected to an already-seen page
-                page_urls = [j["naukri_url"] for j in page_jobs if j.get("naukri_url")]
-                if page_urls and all(u in seen_urls_for_keyword for u in page_urls):
-                    logger.info(f"  Page {page} returned duplicate jobs from earlier pages for '{keyword}'. End of results.")
-                    break
-                seen_urls_for_keyword.update(page_urls)
+            if page >= 2 and page_urls and all(u in applied_urls for u in page_urls):
+                logger.info(f"  ⚡ All {len(page_jobs)} jobs on page {page} were already evaluated in earlier runs. Stopping pagination.")
+                break
 
-                all_jobs.extend(page_jobs)
-                seen_cache.update(page_urls)
+            if page >= max_unified_pages:
+                logger.info(f"  Reached max page limit ({max_unified_pages}).")
+                break
 
-                # Stop paging if all jobs on this page have already been evaluated/seen in previous runs,
-                # saving compute and preventing re-checks of earlier jobs
-                if page_urls and all(u in applied_urls for u in page_urls):
-                    logger.info(f"  ⚡ All {len(page_jobs)} jobs on page {page} were already evaluated in earlier runs. Stopping pagination for '{keyword}'.")
-                    break
-
-                if page >= MAX_PAGES_PER_KEYWORD:
-                    logger.info(f"  Reached max page limit ({MAX_PAGES_PER_KEYWORD}) for '{keyword}'.")
-                    break
-
-                page += 1
-                human_sleep(2.0, 3.5)
+            page += 1
+            human_sleep(2.0, 3.5)
 
         logger.info(f"Total jobs scraped: {len(all_jobs)}")
 
@@ -1312,13 +1452,13 @@ def run_bot():
         matching_jobs = []
         skipped_loc_count = 0
         for j in all_jobs:
-            if is_allowed_location(j.get("location", "")):
+            if is_allowed_job(j):
                 matching_jobs.append(j)
             else:
                 skipped_loc_count += 1
-                logger.debug(f"Skipping {j['title']} (Location '{j.get('location')}' outside allowed cities)")
+                logger.debug(f"Skipping {j['title']} (Location '{j.get('location')}', Mode '{j.get('work_mode')}' outside allowed criteria)")
 
-        logger.info(f"Location filtering: {len(matching_jobs)} matched allowed cities ({skipped_loc_count} skipped)")
+        logger.info(f"Criteria filtering: {len(matching_jobs)} matched allowed criteria ({skipped_loc_count} skipped)")
 
         # Deduplicate
         seen_this_run = set()
@@ -1333,10 +1473,6 @@ def run_bot():
 
         if not new_jobs:
             logger.info("⚡ No new jobs found this run (all already processed). Exiting early to enter sleep mode.")
-            return
-
-        if not new_jobs:
-            logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
             return
 
         # Load questionnaire answers from application_answers.csv

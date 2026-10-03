@@ -48,10 +48,18 @@ FIELDS_DIRECT = [
 
 def get_sheets_client():
     """
-    Authenticate with Google Sheets API using OAuth2.
-    Uses token.json if it exists; otherwise opens browser for consent.
+    Authenticate with Google Sheets API using OAuth2 or Service Account.
+    Prioritizes service_account.json if present, then token.json.
     Returns a googleapiclient service object.
     """
+    sa_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
+    if os.path.exists(sa_path):
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(
+            sa_path, scopes=SCOPES
+        )
+        return build("sheets", "v4", credentials=creds, static_discovery=False)
+
     creds = None
     token_path = "token.json"
     creds_path = "credentials.json"
@@ -65,9 +73,7 @@ def get_sheets_client():
         else:
             if not os.path.exists(creds_path):
                 raise FileNotFoundError(
-                    f"Missing '{creds_path}'. Download from Google Cloud Console "
-                    "(APIs & Services > Credentials > OAuth 2.0 Client IDs > Download JSON). "
-                    "Then run: python sheets_auth.py"
+                    f"Missing credentials. Please supply '{sa_path}' or '{creds_path}'."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
             creds = flow.run_local_server(port=0)
@@ -75,7 +81,7 @@ def get_sheets_client():
         with open(token_path, "w") as f:
             f.write(creds.to_json())
 
-    return build("sheets", "v4", credentials=creds)
+    return build("sheets", "v4", credentials=creds, static_discovery=False)
 
 
 def ensure_sheets_exist(service, sheet_id: str):
@@ -128,6 +134,14 @@ def append_external_job(service, sheet_id: str, job: dict):
     Log a job that requires applying on the company's own website.
     Goes into the 'Apply on Website' sheet (appended to bottom).
     """
+    if not job.get("date"):
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            job["date"] = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            from datetime import datetime
+            job["date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [str(job.get(f, "")) for f in FIELDS_EXTERNAL]
     service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
@@ -142,6 +156,14 @@ def append_direct_job(service, sheet_id: str, job: dict):
     Log a job that was directly applied on Naukri.
     Goes into the 'Direct Applied' sheet (appended to bottom).
     """
+    if not job.get("date"):
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            job["date"] = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            from datetime import datetime
+            job["date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [str(job.get(f, "")) for f in FIELDS_DIRECT]
     service.spreadsheets().values().append(
         spreadsheetId=sheet_id,
