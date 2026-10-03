@@ -1,0 +1,44 @@
+question_text,answer,field_type,created_at
+notice period,30 Days,text,2026-10-03T03:20:00
+what is your notice period,30 Days,text,2026-10-03T03:20:00
+notice period in days,30,text,2026-10-03T03:20:00
+how soon can you join,30 Days,text,2026-10-03T03:20:00
+serving notice period,No,radio,2026-10-03T03:20:00
+are you serving notice period,No,radio,2026-10-03T03:20:00
+are you currently employed,Yes,radio,2026-10-03T03:20:00
+are you currently working,Yes,radio,2026-10-03T03:20:00
+total years of experience,4,text,2026-10-03T03:20:00
+total experience,4.3,text,2026-10-03T03:20:00
+years of experience in c#,4,text,2026-10-03T03:20:00
+experience in c#,4,text,2026-10-03T03:20:00
+c#,4,text,2026-10-03T03:20:00
+experience in .net,4,text,2026-10-03T03:20:00
+.net core,4,text,2026-10-03T03:20:00
+experience in .net core,4,text,2026-10-03T03:20:00
+asp.net,4,text,2026-10-03T03:20:00
+asp.net mvc,4,text,2026-10-03T03:20:00
+asp.net web api,4,text,2026-10-03T03:20:00
+web api,4,text,2026-10-03T03:20:00
+entity framework,4,text,2026-10-03T03:20:00
+ado.net,4,text,2026-10-03T03:20:00
+sql server,4,text,2026-10-03T03:20:00
+microsoft sql server,4,text,2026-10-03T03:20:00
+azure sql,2,text,2026-10-03T03:20:00
+react,2,text,2026-10-03T03:20:00
+react.js,2,text,2026-10-03T03:20:00
+javascript,4,text,2026-10-03T03:20:00
+typescript,2,text,2026-10-03T03:20:00
+rest api,4,text,2026-10-03T03:20:00
+restful apis,4,text,2026-10-03T03:20:00
+willing to relocate,Yes,radio,2026-10-03T03:20:00
+are you willing to relocate,Yes,radio,2026-10-03T03:20:00
+are you comfortable working in hybrid mode,Yes,radio,2026-10-03T03:20:00
+current location,Hyderabad,text,2026-10-03T03:20:00
+preferred location,Hyderabad, Bengaluru,text,2026-10-03T03:20:00
+highest qualification,B.Tech Computer Science and Engineering,text,2026-10-03T03:20:00
+current ctc,8,text,2026-10-03T03:20:00
+current fixed ctc,8,text,2026-10-03T03:20:00
+current annual ctc,8,text,2026-10-03T03:20:00
+expected ctc,14,text,2026-10-03T03:20:00
+expected annual ctc,14,text,2026-10-03T03:20:00
+expected salary,14,text,2026-10-03T03:20:00
