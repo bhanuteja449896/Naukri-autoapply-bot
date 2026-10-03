@@ -106,6 +106,17 @@ def ensure_sheets_exist(service, sheet_id: str):
     _ensure_headers(service, sheet_id, SHEET_EXTERNAL, HEADERS_EXTERNAL)
     _ensure_headers(service, sheet_id, SHEET_DIRECT,   HEADERS_DIRECT)
 
+    # If default empty 'Sheet1' exists, delete it so target tabs are visible first
+    sheet1_meta = [s for s in meta["sheets"] if s["properties"]["title"] == "Sheet1"]
+    if sheet1_meta and len(meta["sheets"]) > 1:
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=sheet_id,
+                body={"requests": [{"deleteSheet": {"sheetId": sheet1_meta[0]["properties"]["sheetId"]}}]},
+            ).execute()
+        except Exception:
+            pass
+
 
 def _ensure_headers(service, sheet_id: str, sheet_name: str, headers: list):
     """Write header row if the sheet is empty."""
@@ -133,6 +144,7 @@ def append_external_job(service, sheet_id: str, job: dict):
         spreadsheetId=sheet_id,
         range=f"'{SHEET_EXTERNAL}'!A:I",
         valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
         body={"values": [row]},
     ).execute()
 
@@ -147,6 +159,7 @@ def append_direct_job(service, sheet_id: str, job: dict):
         spreadsheetId=sheet_id,
         range=f"'{SHEET_DIRECT}'!A:H",
         valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
         body={"values": [row]},
     ).execute()
 
