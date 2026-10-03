@@ -258,6 +258,12 @@ def fuzzy_lookup(question_text: str, known_answers: dict, threshold: float = 0.6
         return known_answers.get("azure data factory", "1")
     if "azure" in q_norm:
         return known_answers.get("azure", "1")
+    if "c#" in q_norm or "c sharp" in q_norm:
+        return known_answers.get("c#", known_answers.get("experience in c#", "4"))
+    if ".net" in q_norm or "dotnet" in q_norm or "asp.net" in q_norm:
+        return known_answers.get(".net", known_answers.get(".net core", "4"))
+    if "entity framework" in q_norm or "ef core" in q_norm:
+        return known_answers.get("entity framework", "4")
     if "fastapi" in q_norm:
         return known_answers.get("fastapi", "1")
     if "python" in q_norm:
