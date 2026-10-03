@@ -116,7 +116,7 @@ gcloud run deploy $SERVICE_NAME \
     --memory=1.5Gi \
     --cpu=1 \
     --timeout=1800 \
-    --no-cpu-throttling \
+    --cpu-throttling \
     --max-instances=1 \
     --concurrency=1 \
     --env-vars-file=env_bhanu.yaml \

@@ -66,6 +66,15 @@ class BotHandler(BaseHTTPRequestHandler):
                 _running = False
             logger.info("Bot run finished.")
 
+            # Shut down container immediately so Cloud Run scales down to 0 instances without waiting 15 minutes
+            def _exit_now():
+                import time
+                time.sleep(1.5)
+                logger.info("🛑 Entering sleep mode: Exiting container to scale to 0 instances immediately.")
+                os._exit(0)
+
+            threading.Thread(target=_exit_now, daemon=True).start()
+
     def _respond(self, code: int, body: str):
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")

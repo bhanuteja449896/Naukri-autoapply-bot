@@ -27,7 +27,7 @@ import random
 import logging
 import difflib
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 # Selenium + stealth (Python 3.14 compatible — replaces undetected-chromedriver)
@@ -166,6 +166,14 @@ def send_telegram_notification(text: str):
                 logger.info(f"📲 Telegram notification sent: {text.splitlines()[0]}")
     except Exception as e:
         logger.warning(f"Telegram notification failed: {e}")
+
+
+def format_telegram_summary(first_name: str, start_time: str, applied_count: int) -> str:
+    """Format Telegram completion message according to profile specification."""
+    if "bhanu" in (first_name or "").lower():
+        return f"Bhanu Teja\nTime : {start_time}\njobs applied : {applied_count}"
+    else:
+        return f"Rahul\nstarting time : {start_time}\nJobs applied : {applied_count}"
 
 
 def human_sleep(mn=1.5, mx=4.0):
@@ -1225,6 +1233,9 @@ def run_bot():
     driver = None
     results = []
     applied_count = 0
+    IST = timezone(timedelta(hours=5, minutes=30))
+    start_time_str = datetime.now(IST).strftime("%I:%M %p")
+    notification_sent = False
     try:
         driver = create_driver()
         is_logged_in = ensure_naukri_session(driver)
@@ -1235,9 +1246,6 @@ def run_bot():
             logger.error("No applications were sent.")
             logger.error("=" * 60)
             return
-
-        user_name = FIRSTNAME or "Bhanu"
-        send_telegram_notification(f"{user_name}\nNaukri bot Activated")
 
         # Scrape with dynamic pagination per keyword
         all_jobs = []
@@ -1312,7 +1320,8 @@ def run_bot():
         if not new_jobs:
             logger.info("⚡ No new jobs found this run (all already processed). Exiting early to save compute.")
             save_seen_cache(seen_cache)
-            send_telegram_notification(f"{user_name}\njobs applied : 0\nNaukri bot Deactivated")
+            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, 0))
+            notification_sent = True
             return
 
         # Load questionnaire answers from application_answers.csv
@@ -1354,6 +1363,9 @@ def run_bot():
         logger.error(f"Bot error: {e}")
         traceback.print_exc()
     finally:
+        if not notification_sent:
+            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, applied_count))
+            notification_sent = True
         save_seen_cache(seen_cache)
         if driver:
             try:
@@ -1374,8 +1386,9 @@ def run_bot():
     logger.info(f"  Failed             : {n_failed}")
     logger.info("=" * 60)
 
-    user_name = FIRSTNAME or "Bhanu"
-    send_telegram_notification(f"{user_name}\njobs applied : {n_applied}\nNaukri bot Deactivated")
+    if not notification_sent:
+        send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, n_applied))
+        notification_sent = True
 
 
 if __name__ == "__main__":
