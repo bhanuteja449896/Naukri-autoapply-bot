@@ -1080,7 +1080,17 @@ def scrape_jobs_from_page(driver, url, keyword):
     jobs = []
     try:
         driver.get(url)
-        human_sleep(3, 6)
+        # Wait up to 10 seconds for job cards / listing links to render and shimmer animation to finish
+        try:
+            WebDriverWait(driver, 10).until(
+                lambda d: len(d.find_elements(By.CSS_SELECTOR, "a[href*='/job-listings-'], .srp-jobtuple-wrapper, .cust-job-tuple, article[class*='jobTuple'], div[class*='job-tuple']")) > 0
+                or "no results" in d.page_source.lower()
+                or "no jobs" in d.page_source.lower()
+            )
+        except TimeoutException:
+            pass
+
+        human_sleep(2, 4)
         # Lazy-load scroll to trigger dynamic content
         for _ in range(5):
             driver.execute_script("window.scrollBy(0, 700);")
