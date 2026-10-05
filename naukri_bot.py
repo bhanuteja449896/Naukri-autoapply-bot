@@ -1540,11 +1540,11 @@ def run_bot():
 
         # Scrape keyword-by-keyword across all configured keywords
         all_jobs = []
+        MIN_PAGES_PER_KW = int(os.getenv("MIN_PAGES_PER_KEYWORD", "1"))
+        MAX_EMPTY_PAGES  = int(os.getenv("MAX_EMPTY_PAGES", "1"))
         max_pages_per_kw = int(os.getenv("MAX_PAGES_PER_KEYWORD", os.getenv("MAX_PAGES", "5")))
-        if max_pages_per_kw < 3:
-            max_pages_per_kw = 3
-        MIN_PAGES_PER_KW = 3   # Always check at least 3 pages per keyword
-        MAX_EMPTY_PAGES  = 3   # Stop this keyword after 3 consecutive empty/seen pages
+        if max_pages_per_kw < MIN_PAGES_PER_KW:
+            max_pages_per_kw = MIN_PAGES_PER_KW
 
         logger.info(f"🚀 Starting KEYWORD-BY-KEYWORD Job Search ({len(KEYWORDS)} keywords)")
         logger.info(f"   Keywords : {', '.join(KEYWORDS)}")
