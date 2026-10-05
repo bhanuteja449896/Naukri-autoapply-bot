@@ -1023,17 +1023,8 @@ def build_search_url_for_page(keyword: str, page: int = 1) -> str:
         base += f"-{page}"
 
     params = []
-
-    # Work mode filter (WFH / Hybrid / Remote)
-    has_remote = any(r in ("remote", "wfh", "work from home") for r in WORK_MODE_ONLY) or any(r in ("remote", "wfh", "work from home") for r in ALLOWED_LOCATIONS)
-    has_hybrid = any("hybrid" in r for r in WORK_MODE_ONLY) or any("hybrid" in r for r in ALLOWED_LOCATIONS)
-
-    if has_remote and has_hybrid:
-        params.append("wfhType=0%2C1")
-    elif has_remote:
-        params.append("wfhType=0")
-    elif has_hybrid:
-        params.append("wfhType=1")
+    # Note: Do NOT add wfhType to slug-based URLs as Naukri Next.js router freezes in infinite shimmer
+    # Work mode (Hybrid/Remote/WFH) and location filtering are handled accurately in Python via is_allowed_job()
 
     if EXPERIENCE_MIN:
         try:
