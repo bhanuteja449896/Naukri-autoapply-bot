@@ -1013,7 +1013,7 @@ def build_unified_search_url(page: int = 1) -> str:
 def build_search_url_for_page(keyword: str, page: int = 1) -> str:
     """Build Naukri search URL for a given keyword and page number."""
     slug = sanitize_keyword_slug(keyword)
-    if LOCATION and "," not in LOCATION:
+    if LOCATION and "," not in LOCATION and LOCATION.lower() not in ("all", "india", ""):
         loc_slug = sanitize_keyword_slug(LOCATION)
         base = f"https://www.naukri.com/{slug}-jobs-in-{loc_slug}"
     else:
@@ -1023,6 +1023,18 @@ def build_search_url_for_page(keyword: str, page: int = 1) -> str:
         base += f"-{page}"
 
     params = []
+
+    # Work mode filter (WFH / Hybrid / Remote)
+    has_remote = any(r in ("remote", "wfh", "work from home") for r in WORK_MODE_ONLY) or any(r in ("remote", "wfh", "work from home") for r in ALLOWED_LOCATIONS)
+    has_hybrid = any("hybrid" in r for r in WORK_MODE_ONLY) or any("hybrid" in r for r in ALLOWED_LOCATIONS)
+
+    if has_remote and has_hybrid:
+        params.append("wfhType=0%2C1")
+    elif has_remote:
+        params.append("wfhType=0")
+    elif has_hybrid:
+        params.append("wfhType=1")
+
     if EXPERIENCE_MIN:
         try:
             if int(EXPERIENCE_MIN) > 0:
@@ -1525,106 +1537,110 @@ def run_bot():
             logger.error("=" * 60)
             return
 
-        # Scrape using unified search URL (all roles, locations, work modes in ONE query)
+        # Scrape keyword-by-keyword across all configured keywords
         all_jobs = []
-        max_unified_pages = int(os.getenv("MAX_PAGES", os.getenv("MAX_PAGES_PER_KEYWORD", "25")))
-        if max_unified_pages < 15:
-            max_unified_pages = 25
+        max_pages_per_kw = int(os.getenv("MAX_PAGES_PER_KEYWORD", os.getenv("MAX_PAGES", "5")))
+        if max_pages_per_kw < 3:
+            max_pages_per_kw = 3
+        MIN_PAGES_PER_KW = 3   # Always check at least 3 pages per keyword
+        MAX_EMPTY_PAGES  = 3   # Stop this keyword after 3 consecutive empty/seen pages
 
-        logger.info(f"🚀 Starting UNIFIED Job Search (all roles & locations combined in ONE query)")
-        logger.info(f"   Keywords ({len(KEYWORDS)}): {', '.join(KEYWORDS)}")
+        logger.info(f"🚀 Starting KEYWORD-BY-KEYWORD Job Search ({len(KEYWORDS)} keywords)")
+        logger.info(f"   Keywords : {', '.join(KEYWORDS)}")
         if ALLOWED_LOCATIONS:
             logger.info(f"   Allowed locations: {', '.join(ALLOWED_LOCATIONS)}")
         if WORK_MODE_ONLY:
             logger.info(f"   Work mode preference: {', '.join(WORK_MODE_ONLY)}")
-        logger.info(f"   Freshness: {JOB_AGE_DAYS}d | Max Pages: {max_unified_pages}")
+        logger.info(f"   Freshness: {JOB_AGE_DAYS}d | Min Pages/KW: {MIN_PAGES_PER_KW} | Max Pages/KW: {max_pages_per_kw}")
 
-        page = 1
-        seen_urls_in_run = set()
-        MIN_PAGES       = 3   # Always check at least this many pages
-        MAX_EMPTY_PAGES = 3   # Stop after this many consecutive pages with no new jobs
-        consecutive_no_new = 0  # Counter for pages with zero new (unseen) jobs
-
-        while True:
-            if time.time() - start_time_epoch > MAX_RUN_SECONDS:
-                logger.info("⏱️ Time limit reached during pagination. Stopping search.")
+        for kw_idx, keyword in enumerate(KEYWORDS, 1):
+            if time.time() - start_time_epoch > MAX_RUN_SECONDS - 300:
+                logger.info("⏱️ Time limit approaching. Stopping keyword searches to proceed to applications.")
                 break
 
-            url = build_unified_search_url(page)
-            logger.info(f"  Fetching Unified Page {page}: {url}")
-            page_jobs = scrape_jobs_from_page(driver, url, keyword="Unified")
+            logger.info(f"\n🔎 [{kw_idx}/{len(KEYWORDS)}] Searching keyword: '{keyword}'")
+            page = 1
+            seen_urls_for_kw = set()
+            consecutive_no_new = 0
 
-            # ── Empty page (Naukri returned 0 cards) ──────────────────────────
-            if not page_jobs:
-                consecutive_no_new += 1
-                logger.info(
-                    f"  ⚠️ Page {page} returned 0 jobs "
-                    f"({consecutive_no_new}/{MAX_EMPTY_PAGES} consecutive empty pages)."
-                )
-                # Always try MIN_PAGES before giving up
-                if page < MIN_PAGES:
-                    logger.info(f"  Retrying — haven't reached minimum {MIN_PAGES} pages yet.")
+            while page <= max_pages_per_kw:
+                if time.time() - start_time_epoch > MAX_RUN_SECONDS - 300:
+                    logger.info("⏱️ Time limit approaching during pagination.")
+                    break
+
+                url = build_search_url_for_page(keyword, page)
+                logger.info(f"  Fetching Page {page}: {url}")
+                page_jobs = scrape_jobs_from_page(driver, url, keyword=keyword)
+
+                # ── Empty page (Naukri returned 0 cards) ──────────────────────────
+                if not page_jobs:
+                    consecutive_no_new += 1
+                    logger.info(
+                        f"  ⚠️ Page {page} returned 0 jobs "
+                        f"({consecutive_no_new}/{MAX_EMPTY_PAGES} consecutive empty pages for '{keyword}')."
+                    )
+                    if page < MIN_PAGES_PER_KW:
+                        logger.info(f"  Retrying — haven't reached minimum {MIN_PAGES_PER_KW} pages yet.")
+                        page += 1
+                        human_sleep(2.0, 4.0)
+                        continue
+                    if consecutive_no_new >= MAX_EMPTY_PAGES:
+                        logger.info(f"  {MAX_EMPTY_PAGES} consecutive empty pages. Ending search for '{keyword}'.")
+                        break
                     page += 1
                     human_sleep(2.0, 4.0)
                     continue
-                if consecutive_no_new >= MAX_EMPTY_PAGES:
-                    logger.info(f"  {MAX_EMPTY_PAGES} consecutive empty pages. End of search results.")
-                    break
-                page += 1
-                human_sleep(2.0, 4.0)
-                continue
 
-            # ── Got some jobs — check if they're all duplicates from this run ─
-            page_urls = [j["naukri_url"] for j in page_jobs if j.get("naukri_url")]
-            if page_urls and all(u in seen_urls_in_run for u in page_urls):
-                consecutive_no_new += 1
-                logger.info(
-                    f"  Page {page} returned only duplicate jobs from earlier pages "
-                    f"({consecutive_no_new}/{MAX_EMPTY_PAGES})."
-                )
-                if page < MIN_PAGES:
-                    logger.info(f"  Continuing — haven't reached minimum {MIN_PAGES} pages yet.")
+                # ── Check if all are duplicates from earlier pages of this keyword ─
+                page_urls = [j["naukri_url"] for j in page_jobs if j.get("naukri_url")]
+                if page_urls and all(u in seen_urls_for_kw for u in page_urls):
+                    consecutive_no_new += 1
+                    logger.info(
+                        f"  Page {page} returned duplicate jobs from earlier pages "
+                        f"({consecutive_no_new}/{MAX_EMPTY_PAGES} for '{keyword}')."
+                    )
+                    if page < MIN_PAGES_PER_KW:
+                        logger.info(f"  Continuing — haven't reached minimum {MIN_PAGES_PER_KW} pages yet.")
+                        page += 1
+                        human_sleep(2.0, 3.5)
+                        continue
+                    if consecutive_no_new >= MAX_EMPTY_PAGES:
+                        logger.info(f"  {MAX_EMPTY_PAGES} consecutive duplicate pages. Ending search for '{keyword}'.")
+                        break
                     page += 1
                     human_sleep(2.0, 3.5)
                     continue
-                if consecutive_no_new >= MAX_EMPTY_PAGES:
-                    logger.info(f"  {MAX_EMPTY_PAGES} consecutive pages with no new jobs. Stopping.")
+
+                # ── Check if already in applied / evaluated from previous runs ─
+                new_page_urls = [u for u in page_urls if u not in applied_urls and u not in seen_urls_for_kw]
+                seen_urls_for_kw.update(page_urls)
+                all_jobs.extend(page_jobs)
+                seen_cache.update(page_urls)
+
+                if not new_page_urls:
+                    consecutive_no_new += 1
+                    logger.info(
+                        f"  ⚡ All {len(page_jobs)} jobs on page {page} already evaluated in earlier runs "
+                        f"({consecutive_no_new}/{MAX_EMPTY_PAGES} for '{keyword}')."
+                    )
+                    if page < MIN_PAGES_PER_KW:
+                        logger.info(f"  Continuing — haven't reached minimum {MIN_PAGES_PER_KW} pages yet.")
+                        page += 1
+                        human_sleep(2.0, 3.5)
+                        continue
+                    if consecutive_no_new >= MAX_EMPTY_PAGES:
+                        logger.info(f"  {MAX_EMPTY_PAGES} consecutive pages with no new jobs. Moving to next keyword.")
+                        break
+                else:
+                    consecutive_no_new = 0
+                    logger.info(f"  ✅ Page {page}: {len(new_page_urls)} new job(s) found for '{keyword}'. Continuing.")
+
+                if page >= max_pages_per_kw:
+                    logger.info(f"  Reached max page limit ({max_pages_per_kw}) for '{keyword}'.")
                     break
+
                 page += 1
                 human_sleep(2.0, 3.5)
-                continue
-
-            # ── Check if all are already in applied/seen from PREVIOUS runs ───
-            new_page_urls = [u for u in page_urls if u not in applied_urls and u not in seen_urls_in_run]
-            seen_urls_in_run.update(page_urls)
-            all_jobs.extend(page_jobs)
-            seen_cache.update(page_urls)
-
-            if not new_page_urls:
-                consecutive_no_new += 1
-                logger.info(
-                    f"  ⚡ All {len(page_jobs)} jobs on page {page} already evaluated from earlier runs "
-                    f"({consecutive_no_new}/{MAX_EMPTY_PAGES})."
-                )
-                if page < MIN_PAGES:
-                    logger.info(f"  Continuing — haven't reached minimum {MIN_PAGES} pages yet.")
-                    page += 1
-                    human_sleep(2.0, 3.5)
-                    continue
-                if consecutive_no_new >= MAX_EMPTY_PAGES:
-                    logger.info(f"  {MAX_EMPTY_PAGES} consecutive pages with no new jobs. Stopping.")
-                    break
-            else:
-                # Found genuinely new jobs — reset the empty-page counter
-                consecutive_no_new = 0
-                logger.info(f"  ✅ Page {page}: {len(new_page_urls)} new job(s) found. Continuing search.")
-
-            if page >= max_unified_pages:
-                logger.info(f"  Reached max page limit ({max_unified_pages}).")
-                break
-
-            page += 1
-            human_sleep(2.0, 3.5)
 
         logger.info(f"Total jobs scraped: {len(all_jobs)}")
 
