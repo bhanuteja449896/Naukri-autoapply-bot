@@ -115,8 +115,10 @@ SHEET_NAME       = os.getenv("SHEET_NAME", "Applications")
 COOKIES_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naukri_cookies.json")
 CHROME_PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_profile")
 GCS_BUCKET         = os.getenv("GCS_BUCKET", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+# Supports comma-separated list of chat IDs for broadcasting to multiple users
+TELEGRAM_CHAT_IDS  = [c.strip() for c in os.getenv("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
+TELEGRAM_CHAT_ID   = TELEGRAM_CHAT_IDS[0] if TELEGRAM_CHAT_IDS else ""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,47 +132,108 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def send_telegram_notification(text: str):
-    """Send a notification message via Telegram bot."""
-    token = TELEGRAM_BOT_TOKEN
-    chat_id = TELEGRAM_CHAT_ID
-    if not token:
-        return
+def _get_all_telegram_chat_ids() -> list:
+    """Get all subscriber chat IDs: from env + from GCS subscriber file."""
+    import urllib.request
+    ids = list(TELEGRAM_CHAT_IDS)  # Start with env-configured IDs
 
-    # If chat_id is not set, try to auto-detect from getUpdates
-    if not chat_id:
+    # Try to load additional subscribers from GCS
+    if GCS_BUCKET:
         try:
-            import urllib.request
+            import subprocess
+            result = subprocess.run(
+                ["gsutil", "cat", f"gs://{GCS_BUCKET}/telegram_subscribers.json"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                stored = json.loads(result.stdout.strip())
+                for cid in stored:
+                    if str(cid) not in ids:
+                        ids.append(str(cid))
+        except Exception as e:
+            logger.debug(f"Could not load GCS subscribers: {e}")
+
+    # If still no IDs, auto-detect from getUpdates
+    token = TELEGRAM_BOT_TOKEN
+    if not ids and token:
+        try:
             req = urllib.request.Request(f"https://api.telegram.org/bot{token}/getUpdates")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode())
                 updates = data.get("result", [])
-                if updates:
-                    last_msg = updates[-1].get("message") or updates[-1].get("channel_post")
-                    if last_msg and "chat" in last_msg:
-                        chat_id = str(last_msg["chat"]["id"])
-                        logger.info(f"Auto-detected Telegram chat_id: {chat_id}")
+                seen = set()
+                for upd in updates:
+                    msg = upd.get("message") or upd.get("channel_post")
+                    if msg and "chat" in msg:
+                        cid = str(msg["chat"]["id"])
+                        if cid not in seen:
+                            seen.add(cid)
+                            ids.append(cid)
+                if ids:
+                    logger.info(f"Auto-detected {len(ids)} Telegram chat_id(s) from getUpdates")
         except Exception as e:
             logger.debug(f"Could not auto-detect chat_id: {e}")
 
-    if not chat_id:
-        logger.warning("Telegram notification skipped: TELEGRAM_CHAT_ID not configured.")
+    return list(dict.fromkeys(ids))  # Deduplicate preserving order
+
+
+def register_telegram_chat_id(chat_id: str):
+    """Save a new chat_id to GCS subscriber list (called when user messages the bot)."""
+    if not GCS_BUCKET or not chat_id:
+        return
+    try:
+        import subprocess
+        # Read existing
+        result = subprocess.run(
+            ["gsutil", "cat", f"gs://{GCS_BUCKET}/telegram_subscribers.json"],
+            capture_output=True, text=True, timeout=10
+        )
+        existing = []
+        if result.returncode == 0 and result.stdout.strip():
+            existing = json.loads(result.stdout.strip())
+        if str(chat_id) not in [str(x) for x in existing]:
+            existing.append(str(chat_id))
+            data = json.dumps(existing).encode()
+            proc = subprocess.run(
+                ["gsutil", "cp", "-", f"gs://{GCS_BUCKET}/telegram_subscribers.json"],
+                input=data, capture_output=True, timeout=15
+            )
+            if proc.returncode == 0:
+                logger.info(f"✅ Registered new Telegram subscriber: {chat_id}")
+    except Exception as e:
+        logger.debug(f"Could not register subscriber: {e}")
+
+
+def send_telegram_notification(text: str):
+    """Send a broadcast notification to ALL registered Telegram subscribers."""
+    token = TELEGRAM_BOT_TOKEN
+    if not token:
         return
 
-    try:
-        import urllib.request
-        import urllib.parse
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = urllib.parse.urlencode({
-            "chat_id": chat_id,
-            "text": text,
-        }).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status == 200:
-                logger.info(f"📲 Telegram notification sent: {text.splitlines()[0]}")
-    except Exception as e:
-        logger.warning(f"Telegram notification failed: {e}")
+    chat_ids = _get_all_telegram_chat_ids()
+    if not chat_ids:
+        logger.warning("Telegram notification skipped: No TELEGRAM_CHAT_ID configured.")
+        return
+
+    import urllib.request
+    import urllib.parse
+    sent = 0
+    for chat_id in chat_ids:
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = urllib.parse.urlencode({
+                "chat_id": chat_id,
+                "text": text,
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    sent += 1
+        except Exception as e:
+            logger.warning(f"Telegram notification failed for {chat_id}: {e}")
+
+    if sent:
+        logger.info(f"📲 Telegram notification sent to {sent} subscriber(s): {text.splitlines()[0]}")
 
 
 def format_telegram_summary(first_name: str, start_time: str, applied_count: int) -> str:
@@ -988,22 +1051,71 @@ def build_search_urls():
 # Scraping
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Known Naukri job card CSS class selectors (in priority order)
+# Naukri periodically changes class names in their Next.js frontend.
+# We try all known patterns — add new ones here if scraping breaks.
+_NAUKRI_CARD_SELECTORS = [
+    {"tag": "div",     "class_": "srp-jobtuple-wrapper"},   # Legacy (2023)
+    {"tag": "div",     "class_": "cust-job-tuple"},         # Legacy alt
+    {"tag": "article", "class_": "jobTuple"},                # 2024 Next.js
+    {"tag": "div",     "class_": "job-tuple-wrapper"},      # 2024 variant
+    {"tag": "li",      "class_": "srp-jobtuple-wrapper"},   # List variant
+    {"tag": "div",     "class_": "srp_container"},          # Container variant
+]
+
+
 def scrape_jobs_from_page(driver, url, keyword):
     jobs = []
     try:
         driver.get(url)
         human_sleep(3, 6)
-        # Lazy-load scroll
-        for _ in range(3):
-            driver.execute_script("window.scrollBy(0, 600);")
+        # Lazy-load scroll to trigger dynamic content
+        for _ in range(5):
+            driver.execute_script("window.scrollBy(0, 700);")
             human_sleep(0.5, 1.2)
         driver.execute_script("window.scrollTo(0, 0);")
-        human_sleep(1, 2)
+        human_sleep(1.5, 2.5)
 
         soup = BeautifulSoup(driver.page_source, "html5lib")
-        wrappers = soup.find_all("div", class_="srp-jobtuple-wrapper")
+        wrappers = []
+
+        # Try all known selectors in priority order
+        for sel in _NAUKRI_CARD_SELECTORS:
+            found = soup.find_all(sel["tag"], class_=sel["class_"])
+            if found:
+                logger.info(f"  [Selector] Found {len(found)} cards using <{sel['tag']} class='{sel['class_']}'>")
+                wrappers = found
+                break
+
+        # If still nothing, try link-based fallback: any <a> with /job-listings-
         if not wrappers:
-            wrappers = soup.find_all("div", class_="cust-job-tuple")
+            job_links = soup.find_all("a", href=lambda h: h and "/job-listings-" in h)
+            if job_links:
+                # Use their parent containers as wrappers
+                seen_parents = set()
+                for link in job_links:
+                    parent = link.find_parent(["article", "div", "li"])
+                    if parent and id(parent) not in seen_parents:
+                        seen_parents.add(id(parent))
+                        wrappers.append(parent)
+                logger.info(f"  [Fallback] Found {len(wrappers)} cards via job-listing links")
+
+        # Debug: if still 0, log a snippet of the page source to help diagnose
+        if not wrappers:
+            import re as _re
+            all_divs = soup.find_all(["div", "article", "li"], class_=True)
+            class_freq = {}
+            for tag in all_divs:
+                for cls in (tag.get("class") or []):
+                    class_freq[cls] = class_freq.get(cls, 0) + 1
+            top_classes = sorted(class_freq.items(), key=lambda x: -x[1])[:20]
+            logger.warning(f"  ⚠️ 0 job cards found! Page top-20 classes: {top_classes}")
+            # Check if we got a captcha/bot-detection page
+            page_text = soup.get_text()[:500].lower()
+            if "captcha" in page_text or "robot" in page_text or "verify" in page_text:
+                logger.warning("  🤖 Bot detection / CAPTCHA detected on page!")
+            elif "no results" in page_text or "no jobs" in page_text:
+                logger.info("  📭 Page says no results found for this search.")
 
         logger.info(f"  [{keyword}] {len(wrappers)} jobs on {url[:70]}")
 
@@ -1018,7 +1130,14 @@ def scrape_jobs_from_page(driver, url, keyword):
 
 def _parse_card(wrapper, keyword):
     try:
-        title_tag = wrapper.find("a", class_="title")
+        # Try multiple title selectors (Naukri changes class names frequently)
+        title_tag = (
+            wrapper.find("a", class_="title") or
+            wrapper.find("a", class_="jobTitle") or
+            wrapper.find("a", class_="job-title") or
+            wrapper.find("a", attrs={"data-ga-track": re.compile("title", re.I)}) or
+            wrapper.find("a", href=re.compile(r"/job-listings-"))
+        )
         if not title_tag:
             return None
 
@@ -1027,14 +1146,24 @@ def _parse_card(wrapper, keyword):
         if href.startswith("/"):
             href = "https://www.naukri.com" + href
 
+        # Company name — multiple fallback selectors
         company_tag = (
             wrapper.find("a", class_="comp-name") or
             wrapper.find("span", class_="comp-name") or
+            wrapper.find("a", class_="companyName") or
+            wrapper.find("span", class_="companyName") or
             wrapper.find("a", attrs={"data-ga-track": re.compile("company", re.I)})
         )
         company = company_tag.get_text(strip=True) if company_tag else "N/A"
 
-        loc_tag = wrapper.find("span", class_="locWdth") or wrapper.find("span", class_="location")
+        # Location — multiple fallback selectors
+        loc_tag = (
+            wrapper.find("span", class_="locWdth") or
+            wrapper.find("span", class_="location") or
+            wrapper.find("span", class_="loc") or
+            wrapper.find("li", class_="location") or
+            wrapper.find("span", attrs={"class": re.compile(r"loc", re.I)})
+        )
         location = loc_tag.get_text(strip=True) if loc_tag else (LOCATION or "N/A")
 
         # Capture card text to detect workplace type (Hybrid / Remote / On-site)
@@ -1412,6 +1541,9 @@ def run_bot():
 
         page = 1
         seen_urls_in_run = set()
+        MIN_PAGES       = 3   # Always check at least this many pages
+        MAX_EMPTY_PAGES = 3   # Stop after this many consecutive pages with no new jobs
+        consecutive_no_new = 0  # Counter for pages with zero new (unseen) jobs
 
         while True:
             if time.time() - start_time_epoch > MAX_RUN_SECONDS:
@@ -1422,22 +1554,70 @@ def run_bot():
             logger.info(f"  Fetching Unified Page {page}: {url}")
             page_jobs = scrape_jobs_from_page(driver, url, keyword="Unified")
 
+            # ── Empty page (Naukri returned 0 cards) ──────────────────────────
             if not page_jobs:
-                logger.info(f"  No jobs found on page {page}. End of search results.")
-                break
+                consecutive_no_new += 1
+                logger.info(
+                    f"  ⚠️ Page {page} returned 0 jobs "
+                    f"({consecutive_no_new}/{MAX_EMPTY_PAGES} consecutive empty pages)."
+                )
+                # Always try MIN_PAGES before giving up
+                if page < MIN_PAGES:
+                    logger.info(f"  Retrying — haven't reached minimum {MIN_PAGES} pages yet.")
+                    page += 1
+                    human_sleep(2.0, 4.0)
+                    continue
+                if consecutive_no_new >= MAX_EMPTY_PAGES:
+                    logger.info(f"  {MAX_EMPTY_PAGES} consecutive empty pages. End of search results.")
+                    break
+                page += 1
+                human_sleep(2.0, 4.0)
+                continue
 
+            # ── Got some jobs — check if they're all duplicates from this run ─
             page_urls = [j["naukri_url"] for j in page_jobs if j.get("naukri_url")]
             if page_urls and all(u in seen_urls_in_run for u in page_urls):
-                logger.info(f"  Page {page} returned duplicate jobs from earlier pages. End of search.")
-                break
-            seen_urls_in_run.update(page_urls)
+                consecutive_no_new += 1
+                logger.info(
+                    f"  Page {page} returned only duplicate jobs from earlier pages "
+                    f"({consecutive_no_new}/{MAX_EMPTY_PAGES})."
+                )
+                if page < MIN_PAGES:
+                    logger.info(f"  Continuing — haven't reached minimum {MIN_PAGES} pages yet.")
+                    page += 1
+                    human_sleep(2.0, 3.5)
+                    continue
+                if consecutive_no_new >= MAX_EMPTY_PAGES:
+                    logger.info(f"  {MAX_EMPTY_PAGES} consecutive pages with no new jobs. Stopping.")
+                    break
+                page += 1
+                human_sleep(2.0, 3.5)
+                continue
 
+            # ── Check if all are already in applied/seen from PREVIOUS runs ───
+            new_page_urls = [u for u in page_urls if u not in applied_urls and u not in seen_urls_in_run]
+            seen_urls_in_run.update(page_urls)
             all_jobs.extend(page_jobs)
             seen_cache.update(page_urls)
 
-            if page >= 2 and page_urls and all(u in applied_urls for u in page_urls):
-                logger.info(f"  ⚡ All {len(page_jobs)} jobs on page {page} were already evaluated in earlier runs. Stopping pagination.")
-                break
+            if not new_page_urls:
+                consecutive_no_new += 1
+                logger.info(
+                    f"  ⚡ All {len(page_jobs)} jobs on page {page} already evaluated from earlier runs "
+                    f"({consecutive_no_new}/{MAX_EMPTY_PAGES})."
+                )
+                if page < MIN_PAGES:
+                    logger.info(f"  Continuing — haven't reached minimum {MIN_PAGES} pages yet.")
+                    page += 1
+                    human_sleep(2.0, 3.5)
+                    continue
+                if consecutive_no_new >= MAX_EMPTY_PAGES:
+                    logger.info(f"  {MAX_EMPTY_PAGES} consecutive pages with no new jobs. Stopping.")
+                    break
+            else:
+                # Found genuinely new jobs — reset the empty-page counter
+                consecutive_no_new = 0
+                logger.info(f"  ✅ Page {page}: {len(new_page_urls)} new job(s) found. Continuing search.")
 
             if page >= max_unified_pages:
                 logger.info(f"  Reached max page limit ({max_unified_pages}).")
