@@ -236,15 +236,17 @@ def send_telegram_notification(text: str):
         logger.info(f"📲 Telegram notification sent to {sent} subscriber(s): {text.splitlines()[0]}")
 
 
-def format_telegram_summary(first_name: str, start_time: str, applied_count: int) -> str:
+def format_telegram_summary(first_name: str, start_time: str, applied_count: int, external_count: int = 0) -> str:
     """Format Telegram completion message according to profile specification."""
+    total = applied_count + external_count
     fn = (first_name or "").lower()
+    details = f"\nDirect: {applied_count} | External (Sheets): {external_count}" if external_count > 0 else ""
     if "bhanu" in fn:
-        return f"Bhanu Teja\nTime : {start_time}\njobs applied : {applied_count}"
+        return f"Bhanu Teja\nTime : {start_time}\njobs applied : {total}{details}"
     elif "kiran" in fn:
-        return f"Kiran Kumar\nTime : {start_time}\njobs applied : {applied_count}"
+        return f"Kiran Kumar\nTime : {start_time}\njobs applied : {total}{details}"
     else:
-        return f"Rahul\nstarting time : {start_time}\nJobs applied : {applied_count}"
+        return f"Rahul\nstarting time : {start_time}\nJobs applied : {total}{details}"
 
 
 def human_sleep(mn=1.5, mx=4.0):
@@ -1727,7 +1729,7 @@ def run_bot():
         logger.info("=" * 60)
 
         if not notification_sent:
-            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, n_applied))
+            send_telegram_notification(format_telegram_summary(FIRSTNAME, start_time_str, n_applied, n_external))
             notification_sent = True
         save_seen_cache(seen_cache)
         if driver:
