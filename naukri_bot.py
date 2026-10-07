@@ -577,9 +577,20 @@ def create_driver():
         options.binary_location = chrome_binary
         logger.info(f"Using browser: {chrome_binary}")
 
-    # Auto-download matching ChromeDriver
-    if WDM_AVAILABLE:
-        service = ChromeService(ChromeDriverManager().install())
+    # ChromeDriver resolution:
+    # Prioritize system-installed ChromeDriver (installed by Debian alongside chromium-driver)
+    # to guarantee an exact version match and prevent mismatch crashes when ChromeDriverManager
+    # downloads newer unreleased drivers.
+    system_driver = _find_chromedriver_binary()
+    if system_driver:
+        logger.info(f"Using system ChromeDriver: {system_driver}")
+        service = ChromeService(executable_path=system_driver)
+    elif WDM_AVAILABLE:
+        try:
+            service = ChromeService(ChromeDriverManager().install())
+        except Exception as e:
+            logger.warning(f"ChromeDriverManager failed: {e}. Falling back to default PATH.")
+            service = ChromeService()
     else:
         service = ChromeService()  # assume chromedriver is in PATH
 
@@ -636,6 +647,28 @@ def _find_chrome_binary() -> str:
             return path
 
     logger.warning("No Chrome/Chromium binary found. Install with: sudo apt-get install -y chromium")
+    return ""
+
+
+def _find_chromedriver_binary() -> str:
+    """Find a functional system ChromeDriver binary matching the installed browser."""
+    import shutil
+    import subprocess
+
+    candidates = [
+        "/usr/bin/chromedriver",
+        "/usr/local/bin/chromedriver",
+        shutil.which("chromedriver"),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            try:
+                res = subprocess.run([c, "--version"], capture_output=True, text=True, timeout=5)
+                if res.returncode == 0 and "ChromeDriver" in res.stdout:
+                    logger.info(f"Verified working system ChromeDriver: {c} ({res.stdout.strip()})")
+                    return c
+            except Exception:
+                pass
     return ""
 
 
